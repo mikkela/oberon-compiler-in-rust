@@ -1,0 +1,12 @@
+[package]
+name = "oberon-compiler"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+thiserror = "1"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+pretty_assertions = "1"
+tempfile = "3"
