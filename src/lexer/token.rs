@@ -3,8 +3,10 @@ use crate::span::Span;
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
     Ident(String),
+    String(String),
     Int(i64),
     Real(f64),
+    Char(u8),
 
     // Keywords (stub)
     Array,
@@ -42,19 +44,33 @@ pub enum TokenKind {
     While,
 
     // Symbols
-    Assign,      // :=
-    Semi,        // ;
-    Colon,       // :
-    Comma,       // ,
-    Dot,         // .
+    Assign,
+    SemiColon,
+    Colon,
+    Comma,
+    Dot,
+    DotDot,
+    LSquare,
+    RSquare,
     LParen,
     RParen,
+    LCurly,
+    RCurly,
 
+    Equal,
+    NotEqual,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
     Plus,
     Minus,
     Star,
     Slash,
-
+    Tilde,
+    Ampersand,
+    Pipe,
+    VersatileMark,
     Eof,
 }
 
