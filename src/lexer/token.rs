@@ -81,7 +81,7 @@ pub struct Token {
 }
 
 impl Token {
-    pub fn new(kind: TokenKind) -> Self {
-        Self { kind, span: Span { start: 0, end: 0 } }
+    pub fn new(kind: TokenKind, span: Span) -> Self {
+        Self { kind, span }
     }
 }

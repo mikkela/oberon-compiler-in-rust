@@ -1,16 +1,23 @@
+use crate::diagnostics::Diagnostic;
+use crate::lexer::{Token, TokenKind};
+use crate::span::Span;
 use std::iter::Peekable;
 use std::str::Chars;
 use thiserror::Error;
-use crate::diagnostics::Diagnostic;
-use crate::lexer::{Token, TokenKind};
 
 #[derive(Debug, Error, PartialEq)]
 pub enum LexError {
-    #[error("Unexpected character: '{0}'")]
-    UnexpectedChar(char),
+    #[error("Unexpected character: '{ch:?}' at {span:?}")]
+    UnexpectedChar {
+        ch: char,
+        span: Span,
+    },
 
-    #[error("Invalid number literal: {0}")]
-    InvalidNumber(String),
+    #[error("Invalid number literal: {text:?} at {span:?}")]
+    InvalidNumber {
+        text: String,
+        span: Span,
+    },
 
     #[error("Unexpected EOF")]
     UnexpectedEof,
@@ -19,17 +26,16 @@ pub enum LexError {
 impl From<LexError> for Diagnostic {
     fn from(err: LexError) -> Self {
         match err {
-            LexError::UnexpectedChar (ch ) => {
+            LexError::UnexpectedChar { ch, span} => {
                 Diagnostic::error(format!("unexpected character '{ch}'"))
-                    //.with_span(span)
+                    .with_span(span)
             }
-            LexError::InvalidNumber(text) => {
+            LexError::InvalidNumber{ text, span} => {
                 Diagnostic::error(format!("invalid number literal '{text}'"))
-                    //.with_span(span)
+                    .with_span(span)
             }
             LexError::UnexpectedEof => {
                 Diagnostic::error(format!("unexpected end of file"))
-                    //.with_span(span)
             }
         }
     }
@@ -37,12 +43,17 @@ impl From<LexError> for Diagnostic {
 
 pub struct Lexer<'a> {
     input: Peekable<Chars<'a>>,
+    pos: usize,
 }
 
 impl<'a> Lexer<'a> {
+
+    fn pos(&self) -> usize { self.pos }
+    fn span(&self, start: usize, end:usize) -> Span { Span::new(start, end) }
     pub fn new(src: &'a str) -> Self {
         Self {
             input: src.chars().peekable(),
+            pos: 0,
         }
     }
 
@@ -51,7 +62,12 @@ impl<'a> Lexer<'a> {
     }
 
     fn next_char(&mut self) -> Option<char> {
-        self.input.next()
+        let ch = self.input.next();
+        match ch {
+            Some(_) => self.pos += 1,
+            None => {}
+        }
+        ch
     }
 
     fn is_hex_digit(ch: char) -> bool {
@@ -93,6 +109,8 @@ impl<'a> Lexer<'a> {
         return false;
     }
     fn read_number(&mut self, first_digit: char) -> Result<Token, LexError> {
+        let start = self.pos();
+
         let mut s = String::new();
         s.push(first_digit);
 
@@ -129,10 +147,16 @@ impl<'a> Lexer<'a> {
 
                 // mindst én digit kræves efter E (+/-)
                 let Some(ch) = self.peek_char() else {
-                    return Err(LexError::InvalidNumber(s.clone()))
+                    return Err(LexError::InvalidNumber{
+                        text: s.clone(),
+                        span: self.span(start, self.pos()),
+                    })
                 };
                 if !ch.is_ascii_digit() {
-                    return Err(LexError::InvalidNumber(s.clone()))
+                    return Err(LexError::InvalidNumber{
+                        text: s.clone(),
+                        span: self.span(start, self.pos()),
+                    })
                 }
 
                 while let Some(d) = self.peek_char() {
@@ -146,9 +170,12 @@ impl<'a> Lexer<'a> {
             }
 
             let value = s.parse::<f64>()
-                .map_err(|_| LexError::InvalidNumber(s.clone()))?;
+                .map_err(|_| LexError::InvalidNumber{
+                    text: s.clone(),
+                    span: self.span(start, self.pos()),
+                })?;
 
-            return Ok(Token::new(TokenKind::Real(value)));
+            return Ok(Token::new(TokenKind::Real(value), self.span(start, self.pos())));
         }
         if self.peek_char() == Some('H') || self.peek_char() == Some('X') {
             let ch = self.next_char().unwrap();
@@ -158,31 +185,46 @@ impl<'a> Lexer<'a> {
 
             // Valider at alle tegn er hexDigit (0-9, A-F)
             if !hex_part.chars().all(Self::is_hex_digit) {
-                return Err(LexError::InvalidNumber(s.clone()))
+                return Err(LexError::InvalidNumber{
+                    text: s.clone(),
+                    span: self.span(start, self.pos()),
+                })
             }
 
             if ch == 'X' {
                 let value = u8::from_str_radix(hex_part, 16)
-                    .map_err(|_| LexError::InvalidNumber(s))?;
+                    .map_err(|_| LexError::InvalidNumber{
+                        text: s.clone(),
+                        span: self.span(start, self.pos()),
+                    })?;
 
-                return Ok(Token::new(TokenKind::Char(value)))
+                return Ok(Token::new(TokenKind::Char(value), self.span(start, self.pos())))
             }
-            let value = i64::from_str_radix(hex_part, 16)
-                .map_err(|_| LexError::InvalidNumber(s))?;
 
-            return Ok(Token::new(TokenKind::Int(value)))
+
+            let value = i64::from_str_radix(hex_part, 16)
+                .map_err(|_| LexError::InvalidNumber{
+                    text: s.clone(),
+                    span: self.span(start, self.pos()),
+                })?;
+
+            return Ok(Token::new(TokenKind::Int(value), self.span(start, self.pos())))
         }
 
-        let value = s.parse::<i64>().map_err(|_| LexError::InvalidNumber(s.clone()))?;
-        Ok(Token::new(TokenKind::Int(value)))
+        let value = s.parse::<i64>().map_err(|_| LexError::InvalidNumber{
+            text: s.clone(),
+            span: self.span(start, self.pos()),
+        })?;
+        Ok(Token::new(TokenKind::Int(value), self.span(start, self.pos())))
     }
 
     fn read_string(&mut self) -> Result<Token, LexError> {
+        let start = self.pos() - 1; // The preceeding " is already consumed
         let mut s = String::new();
 
         while let Some(ch) = self.next_char() {
             if ch == '"' {
-                return Ok(Token::new(TokenKind::String(s)))
+                return Ok(Token::new(TokenKind::String(s), self.span(start, self.pos())))
             }
             else if ch.is_ascii() {
                 s.push(ch);
@@ -191,6 +233,7 @@ impl<'a> Lexer<'a> {
         Err(LexError::UnexpectedEof)
     }
     fn read_ident_or_keyword(&mut self, first_char: char) -> Result<Token, LexError> {
+        let start = self.pos();
         let mut s = String::new();
         s.push(first_char);
 
@@ -240,75 +283,79 @@ impl<'a> Lexer<'a> {
             _ => TokenKind::Ident(s),
         };
 
-        Ok(Token::new(tok))
+        Ok(Token::new(tok, self.span(start, self.pos())))
     }
 
     pub fn next_token(&mut self) -> Result<Token, LexError> {
         self.skip_whitespace();
 
+        let start = self.pos();
         let ch = match self.next_char() {
             Some(c) => c,
-            None => return Ok(Token::new(TokenKind::Eof)),
+            None => return Ok(Token::new(TokenKind::Eof, self.span(start, self.pos()))),
         };
 
         match ch {
             c if c.is_ascii_alphabetic() => self.read_ident_or_keyword(c),
             c if c.is_ascii_digit() => self.read_number(c),
-            '+' => Ok(Token::new(TokenKind::Plus)),
-            '-' => Ok(Token::new(TokenKind::Minus)),
-            '*' => Ok(Token::new(TokenKind::Star)),
-            '/' => Ok(Token::new(TokenKind::Slash)),
-            '~' => Ok(Token::new(TokenKind::Tilde)),
-            '&' => Ok(Token::new(TokenKind::Ampersand)),
+            '+' => Ok(Token::new(TokenKind::Plus, self.span(start, self.pos()))),
+            '-' => Ok(Token::new(TokenKind::Minus, self.span(start, self.pos()))),
+            '*' => Ok(Token::new(TokenKind::Star, self.span(start, self.pos()))),
+            '/' => Ok(Token::new(TokenKind::Slash, self.span(start, self.pos()))),
+            '~' => Ok(Token::new(TokenKind::Tilde, self.span(start, self.pos()))),
+            '&' => Ok(Token::new(TokenKind::Ampersand, self.span(start, self.pos()))),
             '.' => {
                 if self.peek_char() == Some('.') {
                     self.next_char();
-                    Ok(Token::new(TokenKind::DotDot))
-                } else { Ok(Token::new(TokenKind::Dot)) }
+                    Ok(Token::new(TokenKind::DotDot, self.span(start, self.pos())))
+                } else { Ok(Token::new(TokenKind::Dot, self.span(start, self.pos()))) }
             }
-            ',' => Ok(Token::new(TokenKind::Comma)),
-            ';' => Ok(Token::new(TokenKind::SemiColon)),
-            '|' => Ok(Token::new(TokenKind::Pipe)),
+            ',' => Ok(Token::new(TokenKind::Comma, self.span(start, self.pos()))),
+            ';' => Ok(Token::new(TokenKind::SemiColon, self.span(start, self.pos()))),
+            '|' => Ok(Token::new(TokenKind::Pipe, self.span(start, self.pos()))),
             '(' => {
                 if self.peek_char() == Some('*') {
                     self.next_char();
                     if !self.skip_comment()
                         { return Err(LexError::UnexpectedEof) }
                     self.next_token()
-                } else { Ok(Token::new(TokenKind::LParen)) }
+                } else { Ok(Token::new(TokenKind::LParen, self.span(start, self.pos()))) }
             }
-            '[' => Ok(Token::new(TokenKind::LParen)),
-            '{' => Ok(Token::new(TokenKind::LCurly)),
+            '[' => Ok(Token::new(TokenKind::LParen, self.span(start, self.pos()))),
+            '{' => Ok(Token::new(TokenKind::LCurly, self.span(start, self.pos()))),
             ':' => {
                 if self.peek_char() == Some('=') {
                     self.next_char();
-                    Ok(Token::new(TokenKind::Assign))
-                } else { Ok(Token::new(TokenKind::Colon)) }
+                    Ok(Token::new(TokenKind::Assign, self.span(start, self.pos())))
+                } else { Ok(Token::new(TokenKind::Colon, self.span(start, self.pos()))) }
             }
-            '^' => Ok(Token::new(TokenKind::VersatileMark)),
-            '=' => Ok(Token::new(TokenKind::Equal)),
-            '#' => Ok(Token::new(TokenKind::NotEqual)),
+            '^' => Ok(Token::new(TokenKind::VersatileMark, self.span(start, self.pos()))),
+            '=' => Ok(Token::new(TokenKind::Equal, self.span(start, self.pos()))),
+            '#' => Ok(Token::new(TokenKind::NotEqual, self.span(start, self.pos()))),
             '<' => {
                 if self.peek_char() == Some('=') {
                     self.next_char();
-                    Ok(Token::new(TokenKind::LessThanOrEqual))
+                    Ok(Token::new(TokenKind::LessThanOrEqual, self.span(start, self.pos())))
                 } else {
-                    Ok(Token::new(TokenKind::LessThan))
+                    Ok(Token::new(TokenKind::LessThan, self.span(start, self.pos())))
                 }
             }
             '>' => {
                 if self.peek_char() == Some('=') {
                     self.next_char();
-                    Ok(Token::new(TokenKind::GreaterThanOrEqual))
+                    Ok(Token::new(TokenKind::GreaterThanOrEqual, self.span(start, self.pos())))
                 } else {
-                    Ok(Token::new(TokenKind::GreaterThan))
+                    Ok(Token::new(TokenKind::GreaterThan, self.span(start, self.pos())))
                 }
             }
-            ')' => Ok(Token::new(TokenKind::RParen)),
-            ']' => Ok(Token::new(TokenKind::RSquare)),
-            '}' => Ok(Token::new(TokenKind::RCurly)),
+            ')' => Ok(Token::new(TokenKind::RParen, self.span(start, self.pos()))),
+            ']' => Ok(Token::new(TokenKind::RSquare, self.span(start, self.pos()))),
+            '}' => Ok(Token::new(TokenKind::RCurly, self.span(start, self.pos()))),
             '"' => self.read_string(),
-            other => Err(LexError::UnexpectedChar(other)),
+            other => Err(LexError::UnexpectedChar{
+                ch: other,
+                span: self.span(start, self.pos()),
+            }),
         }
     }
 
@@ -317,7 +364,8 @@ impl<'a> Lexer<'a> {
 #[cfg(test)]
 mod tests {
     use crate::lexer::lexer::{LexError, Lexer};
-    use crate::lexer::{Token, TokenKind};
+    use crate::lexer::TokenKind;
+    use crate::span::Span;
 
     fn collect_tokens(src: &str) -> Result<Vec<TokenKind>, LexError> {
         let mut lexer = Lexer::new(src);
@@ -388,7 +436,10 @@ mod tests {
         let mut lexer = Lexer::new("0FF");
         let result = lexer.next_token();
 
-        assert_eq!(result, Err(LexError::InvalidNumber("0FF".parse().unwrap())));
+        assert_eq!(result, Err(LexError::InvalidNumber{
+            text: "0FF".to_string(),
+            span: Span::new(1, 3),
+        }));
     }
 
     #[test]
@@ -432,7 +483,10 @@ mod tests {
         let mut lexer = Lexer::new("123E+2");
         let result = lexer.next_token();
 
-        assert_eq!(result, Err(LexError::InvalidNumber("123E".parse().unwrap())));
+        assert_eq!(result, Err(LexError::InvalidNumber{
+            text: "123E".to_string(),
+            span: Span::new(1, 4),
+        }));
     }
 
     #[test]
@@ -516,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn lex_character_FF() {
+    fn lex_character_0ff() {
         let tokens = collect_tokens("0FFX").unwrap();
         assert_eq!(tokens, vec![TokenKind::Char(255), TokenKind::Eof]);
     }
@@ -526,6 +580,9 @@ mod tests {
         let mut lexer = Lexer::new("100XX");
         let result = lexer.next_token();
 
-        assert_eq!(result, Err(LexError::InvalidNumber("100X".parse().unwrap())));
+        assert_eq!(result, Err(LexError::InvalidNumber{
+            text: "100X".to_string(),
+            span: Span::new(1, 4),
+        }));
     }
 }

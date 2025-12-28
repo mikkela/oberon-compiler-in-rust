@@ -9,9 +9,15 @@ impl Span {
         Self { start, end }
     }
 
-    pub fn next(&self) -> Self {
-        Self { start: self.end, end: self.end + 1 }
+    pub fn increment(&mut self) {
+        self.end+=1;
     }
+
+    pub fn decrement(&mut self) {
+        self.start-=1;
+    }
+
+    pub fn increment_end(&mut self) {}
 }
 
 #[derive(Clone, Debug)]
