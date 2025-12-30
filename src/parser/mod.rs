@@ -1,3 +1,5 @@
+mod parser;
+
 use crate::{
     ast::Module,
     diagnostics::Diagnostic,
@@ -31,8 +33,8 @@ pub fn parse_module(src: &SourceFile, tokens: &[Token]) -> Result<Module> {
     let end_span = tokens.last().map(|t| t.span).unwrap_or(Span::new(0, 0));
     Ok(Module {
         name,
-        decls: vec![],
+        imports: vec![],
+        declarations: vec![],
         stmts: vec![],
-        span: Span::new(t0.span.start, end_span.end),
     })
 }
