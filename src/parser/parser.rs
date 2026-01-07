@@ -1,6 +1,9 @@
 use crate::ast::Expression::Designator;
 use crate::ast::Selector::Qualify;
-use crate::ast::{ActualParameters, Declaration, Element, Expression, Identifier, IdentifierDef, Import, Module, QualifiedIdentifier, Type};
+use crate::ast::{
+    ActualParameters, Declaration, Element, Expression, Identifier, IdentifierDef, Import, Module,
+    QualifiedIdentifier, Type,
+};
 use crate::lexer::TokenKind::{Array, Ident, LParen, RParen};
 use crate::lexer::{Token, TokenKind};
 use crate::span::Span;
@@ -9,9 +12,7 @@ use thiserror::Error;
 #[derive(Debug, Error, PartialEq)]
 pub enum ParserError {
     #[error("Unexpected token: '{token:?}'")]
-    UnexpectedToken {
-        token: Token,
-    },
+    UnexpectedToken { token: Token },
 
     #[error("Unexpected end of file")]
     UnexpectedEof,
@@ -19,109 +20,221 @@ pub enum ParserError {
     #[error("Invalid name '{name}'")]
     InvalidName { name: String },
 }
+
 pub struct Parser<'a> {
     tokens: &'a [Token],
     pos: usize,
 }
 
 impl<'a> Parser<'a> {
-    fn peek(&self) -> &Token {
-        &self.tokens[self.pos]
+    // -------------------------
+    // Cursor helpers
+    // -------------------------
+
+    fn peek_opt(&self) -> Option<&Token> {
+        self.tokens.get(self.pos)
     }
 
-    fn bump(&mut self) -> Token {
-        let t = self.tokens[self.pos].clone();
+    fn peek(&self) -> Result<&Token, ParserError> {
+        self.peek_opt().ok_or(ParserError::UnexpectedEof)
+    }
+
+    fn peek_kind(&self) -> Result<&TokenKind, ParserError> {
+        Ok(&self.peek()?.kind)
+    }
+
+    fn at(&self, k: &TokenKind) -> bool {
+        self.peek_opt().map(|t| &t.kind == k).unwrap_or(false)
+    }
+
+    fn bump(&mut self) -> Result<Token, ParserError> {
+        let t = self.peek()?.clone();
         self.pos += 1;
-        t
+        Ok(t)
     }
 
-    fn expect_kind(&mut self, expected: TokenKind) -> Result<Token, ParserError> {
-        let tok = self.peek();
-
-        if tok.kind == expected {
-            Ok(self.bump())
+    fn eat(&mut self, k: TokenKind) -> Result<Option<Token>, ParserError> {
+        if self.at(&k) {
+            Ok(Some(self.bump()?))
         } else {
-            Err(ParserError::UnexpectedToken { token: tok.clone() })
+            Ok(None)
+        }
+    }
+
+    fn expect(&mut self, expected: TokenKind) -> Result<Token, ParserError> {
+        let tok = self.peek()?.clone();
+        if tok.kind == expected {
+            self.pos += 1;
+            Ok(tok)
+        } else {
+            Err(ParserError::UnexpectedToken { token: tok })
         }
     }
 
     fn expect_ident(&mut self) -> Result<Identifier, ParserError> {
-        let tok = self.peek().clone();
-
+        let tok = self.peek()?.clone();
         match &tok.kind {
             TokenKind::Ident(name) => {
-                let name = name.clone();
-                self.bump();
-                Ok(Identifier { identifier: name, span: tok.span } )
+                self.pos += 1;
+                Ok(Identifier {
+                    identifier: name.clone(),
+                    span: tok.span,
+                })
             }
             _ => Err(ParserError::UnexpectedToken { token: tok }),
         }
     }
 
     fn expect_number(&mut self) -> Result<Expression, ParserError> {
-        let tok = self.peek().clone();
-
+        let tok = self.peek()?.clone();
         match &tok.kind {
             TokenKind::Int(value) => {
-                self.bump();
-                Ok(Expression::Int { value: *value, span: tok.span } )
+                self.pos += 1;
+                Ok(Expression::Int {
+                    value: *value,
+                    span: tok.span,
+                })
             }
             TokenKind::Real(value) => {
-                self.bump();
-                Ok(Expression::Real { value: *value, span: tok.span } )
+                self.pos += 1;
+                Ok(Expression::Real {
+                    value: *value,
+                    span: tok.span,
+                })
             }
             _ => Err(ParserError::UnexpectedToken { token: tok }),
         }
     }
 
     fn expect_string(&mut self) -> Result<Expression, ParserError> {
-        let tok = self.peek().clone();
-
+        let tok = self.peek()?.clone();
         match &tok.kind {
             TokenKind::String(value) => {
-                self.bump();
-                Ok(Expression::String { value: value.to_string(), span: tok.span } )
+                self.pos += 1;
+                Ok(Expression::String {
+                    value: value.to_string(),
+                    span: tok.span,
+                })
             }
             TokenKind::Char(value) => {
-                self.bump();
-                Ok(Expression::String { value: char::from(*value).to_string(), span: tok.span } )
+                self.pos += 1;
+                Ok(Expression::String {
+                    value: char::from(*value).to_string(),
+                    span: tok.span,
+                })
             }
             _ => Err(ParserError::UnexpectedToken { token: tok }),
         }
     }
 
     fn expect_boolean(&mut self) -> Result<Expression, ParserError> {
-        let tok = self.peek().clone();
-
-        match &tok.kind {
+        let tok = self.peek()?.clone();
+        match tok.kind {
             TokenKind::False => {
-                self.bump();
-                Ok(Expression::Bool { value: false, span: tok.span } )
+                self.pos += 1;
+                Ok(Expression::Bool {
+                    value: false,
+                    span: tok.span,
+                })
             }
             TokenKind::True => {
-                self.bump();
-                Ok(Expression::Bool { value: true, span: tok.span } )
+                self.pos += 1;
+                Ok(Expression::Bool {
+                    value: true,
+                    span: tok.span,
+                })
             }
             _ => Err(ParserError::UnexpectedToken { token: tok }),
         }
     }
 
+    // -------------------------
+    // Small parsing utilities
+    // -------------------------
+
+    fn comma_list_until<T>(
+        &mut self,
+        until: TokenKind,
+        mut item: impl FnMut(&mut Self) -> Result<T, ParserError>,
+    ) -> Result<Vec<T>, ParserError> {
+        let mut items = vec![];
+        while !self.at(&until) {
+            if !items.is_empty() {
+                self.expect(TokenKind::Comma)?;
+            }
+            items.push(item(self)?);
+        }
+        Ok(items)
+    }
+
+    fn maybe_star(&mut self) -> Result<Option<Token>, ParserError> {
+        self.eat(TokenKind::Star)
+    }
+
+    fn create_identifier_def(name: Identifier, star_tok: Option<Token>) -> IdentifierDef {
+        let span = match &star_tok {
+            Some(t) => Span::new(name.span.start, t.span.end),
+            None => name.span,
+        };
+
+        IdentifierDef {
+            identifier: name,
+            star: star_tok.is_some(),
+            span,
+        }
+    }
+
+    fn parse_named_decls<T>(
+        &mut self,
+        header: TokenKind,
+        mut parse_rhs: impl FnMut(&mut Self) -> Result<T, ParserError>,
+        mut build: impl FnMut(IdentifierDef, T, Span) -> Declaration,
+    ) -> Result<Vec<Declaration>, ParserError> {
+        if !self.at(&header) {
+            return Ok(vec![]);
+        }
+
+        self.bump()?; // header
+
+        let mut out = vec![];
+        while matches!(self.peek_kind()?, TokenKind::Ident(_)) {
+            let name = self.expect_ident()?;
+            let star_tok = self.maybe_star()?;
+            self.expect(TokenKind::Equal)?;
+
+            let rhs = parse_rhs(self)?;
+            let semi = self.expect(TokenKind::SemiColon)?;
+
+            let decl_span = Span::new(name.span.start, semi.span.end);
+            let ident = Self::create_identifier_def(name, star_tok);
+            out.push(build(ident, rhs, decl_span));
+        }
+        Ok(out)
+    }
+
+    // -------------------------
+    // Top-level
+    // -------------------------
+
     pub fn parse(&mut self) -> Result<Module, ParserError> {
-        let begin = self.expect_kind(TokenKind::Module)?;
+        let begin = self.expect(TokenKind::Module)?;
         let first_ident = self.expect_ident()?;
-        self.expect_kind(TokenKind::SemiColon)?;
+        self.expect(TokenKind::SemiColon)?;
+
         let import_list = self.parse_import_list()?;
         let declaration_sequence = self.parse_declaration_sequence()?;
-        self.expect_kind(TokenKind::End)?;
+
+        self.expect(TokenKind::End)?;
         let second_ident = self.expect_ident()?;
-        let end = self.expect_kind(TokenKind::Dot)?;
+        let end = self.expect(TokenKind::Dot)?;
+
         Ok(Module {
             first_ident,
             second_ident,
             import_list,
             declaration_sequence,
             stmts: vec![],
-            span: Span { start: begin.span.start, end: end.span.end},
+            span: Span::new(begin.span.start, end.span.end),
         })
     }
 
@@ -133,130 +246,129 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_import_list(&mut self) -> Result<Vec<Import>, ParserError> {
-        let mut imports = vec![];
-        if self.peek().kind == TokenKind::Import {
-            self.bump();
-            let mut first = true;
-            while self.peek().kind != TokenKind::SemiColon {
-                if !first {
-                    self.expect_kind(TokenKind::Comma)?;
-                }
-                first = false;
-                let first_ident = self.expect_ident()?;
-                let span_begin = first_ident.span.start;
-                let mut span_end = first_ident.span.end;
-                let second_ident = if self.peek().kind == TokenKind::Assign {
-                    self.bump();
-                    let ident = self.expect_ident()?;
-                    span_end = ident.span.end;
-                   Some( ident)
-                } else {
-                    None
-                };
-                imports.push(
-                    Import { first_ident, second_ident, span: Span { start: span_begin, end: span_end} });
-            }
-            self.expect_kind(TokenKind::SemiColon)?;
+        if !self.at(&TokenKind::Import) {
+            return Ok(vec![]);
         }
+
+        self.bump()?; // IMPORT
+
+        let mut imports = vec![];
+        while !self.at(&TokenKind::SemiColon) {
+            if !imports.is_empty() {
+                self.expect(TokenKind::Comma)?;
+            }
+
+            let first_ident = self.expect_ident()?;
+            let span_begin = first_ident.span.start;
+
+            let second_ident = if self.at(&TokenKind::Assign) {
+                self.bump()?; // :=
+                Some(self.expect_ident()?)
+            } else {
+                None
+            };
+
+            let span_end = second_ident
+                .as_ref()
+                .map(|i| i.span.end)
+                .unwrap_or(first_ident.span.end);
+
+            imports.push(Import {
+                first_ident,
+                second_ident,
+                span: Span::new(span_begin, span_end),
+            });
+        }
+
+        self.expect(TokenKind::SemiColon)?;
         Ok(imports)
     }
 
     fn parse_const_declarations(&mut self) -> Result<Vec<Declaration>, ParserError> {
-        let mut consts =  vec![];
-        if self.peek().kind == TokenKind::Const {
-            self.bump();
-            while matches!(self.peek().kind, TokenKind::Ident(_)) {
-                let name = self.expect_ident()?;
-                let star =
-                    if self.peek().kind == TokenKind::Star { Some(self.expect_kind(TokenKind::Star)?) } else { None };
-                self.expect_kind(TokenKind::Equal)?;
-                let value = self.parse_expression()?;
-                let semicolon = self.expect_kind(TokenKind::SemiColon)?;
-
-                let ident = Self::create_identifier_def(&name, star);
-
-                consts.push(Declaration::Const {
-                    ident,
-                    expression: value,
-                    span: Span { start: name.span.start, end: semicolon.span.end },
-                });
-            }
-        }
-        Ok(consts)
-    }
-
-    fn create_identifier_def(name: &Identifier, star: Option<Token>) -> IdentifierDef {
-        let ident = IdentifierDef {
-            identifier: name.clone(),
-            star: star.is_some(),
-            span:
-            if star.is_some()
-            { Span { start: name.span.start, end: star.unwrap().span.end } } else { name.span },
-        };
-        ident
+        self.parse_named_decls(
+            TokenKind::Const,
+            |p| p.parse_expression(),
+            |ident, expression, span| Declaration::Const {
+                ident,
+                expression,
+                span,
+            },
+        )
     }
 
     fn parse_type_declarations(&mut self) -> Result<Vec<Declaration>, ParserError> {
-        let mut types =  vec![];
-        if self.peek().kind == TokenKind::Type {
-            self.bump();
-            while matches!(self.peek().kind, TokenKind::Ident(_)) {
-                let name = self.expect_ident()?;
-                let star =
-                    if self.peek().kind == TokenKind::Star { Some(self.expect_kind(TokenKind::Star)?) } else { None };
-                self.expect_kind(TokenKind::Equal)?;
-                let ty = self.parse_type()?;
-                let semicolon = self.expect_kind(TokenKind::SemiColon)?;
-
-                let ident = Self::create_identifier_def(&name, star);
-
-                types.push(Declaration::Type {
-                    ident,
-                    ty,
-                    span: Span { start: name.span.start, end: semicolon.span.end },
-                });
-            }
-        }
-        Ok(types)
+        self.parse_named_decls(
+            TokenKind::Type,
+            |p| p.parse_type(),
+            |ident, ty, span| Declaration::Type { ident, ty, span },
+        )
     }
+
+    // -------------------------
+    // Types
+    // -------------------------
 
     fn parse_type(&mut self) -> Result<Type, ParserError> {
-        let peek = self.peek().clone();
-        match peek.kind  {
+        let peek = self.peek()?.clone();
+
+        match peek.kind {
             Ident(_) => {
-                let mut second_ident = self.expect_ident()?;
-                let mut span = second_ident.span;
-                let mut first_ident = None;
-                if self.peek().kind == TokenKind::Dot {
-                    self.expect_kind(TokenKind::Dot)?;
-                    first_ident = Some(second_ident);
-                    second_ident = self.expect_ident()?;
-                    span = Span { start: span.start, end: second_ident.span.end };
+                // Named type: Ident | Ident '.' Ident
+                let first_or_second = self.expect_ident()?;
+                if self.at(&TokenKind::Dot) {
+                    self.bump()?; // .
+                    let second_ident = self.expect_ident()?;
+                    let span = Span::new(first_or_second.span.start, second_ident.span.end);
+
+                    Ok(Type::Named {
+                        name: QualifiedIdentifier {
+                            first_ident: Some(first_or_second),
+                            second_ident,
+                            span,
+                        },
+                        span,
+                    })
+                } else {
+                    let span = first_or_second.span;
+                    Ok(Type::Named {
+                        name: QualifiedIdentifier {
+                            first_ident: None,
+                            second_ident: first_or_second,
+                            span,
+                        },
+                        span,
+                    })
                 }
-                Ok(Type::Named { name: QualifiedIdentifier {
-                    first_ident,
-                    second_ident,
-                    span,
-                }, span })
             }
+
             Array => {
-                let start = self.expect_kind(TokenKind::Array)?.span.start;
+                let start = self.expect(TokenKind::Array)?.span.start;
+
+                // ARRAY len {, len} OF type
                 let mut lengths = vec![self.parse_expression()?];
-                while self.peek().kind == TokenKind::Comma {
-                    self.bump();
+                while self.at(&TokenKind::Comma) {
+                    self.bump()?;
                     lengths.push(self.parse_expression()?);
                 }
-                self.expect_kind(TokenKind::Of)?;
+
+                self.expect(TokenKind::Of)?;
                 let element = self.parse_type()?;
+                let end = element.span().end;
+
                 Ok(Type::Array {
                     lengths,
-                    element: Box::new(element.clone()),
-                    span: Span { start, end: element.span().end },
+                    element: Box::new(element),
+                    span: Span::new(start, end),
                 })
             }
-            _ => Err(ParserError::UnexpectedToken { token: peek })
+
+            _ => Err(ParserError::UnexpectedToken { token: peek }),
         }
     }
+
+    // -------------------------
+    // Expressions
+    // -------------------------
 
     fn parse_expression(&mut self) -> Result<Expression, ParserError> {
         self.parse_simple_expression()
@@ -271,143 +383,236 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_factor(&mut self) -> Result<Expression, ParserError> {
-        let peek = self.peek().clone();
+        let peek = self.peek()?.clone();
+
         match peek.kind {
-            TokenKind::Int(_) => self.expect_number(),
-            TokenKind::Real(_) => self.expect_number(),
-            TokenKind::String(_) => self.expect_string(),
-            TokenKind::Char(_) => self.expect_string(),
-            TokenKind::False => self.expect_boolean(),
-            TokenKind::True => self.expect_boolean(),
-            TokenKind::Nil =>
-                {
-                    self.bump();
-                    Ok(Expression::Nil { span: peek.span })
-                }
-            TokenKind::LCurly => {
-                self.bump();
-                let mut elements = vec![self.parse_element()?.into()];
-                while self.peek().kind == TokenKind::Comma {
-                    self.bump();
-                    elements.push(self.parse_element()?.into());
-                }
-                let end = self.expect_kind(TokenKind::RCurly)?;
-                Ok(Expression::Set { value: elements, span: Span {
-                    start: peek.span.start, end: end.span.end
-                } })
+            TokenKind::Int(_) | TokenKind::Real(_) => self.expect_number(),
+            TokenKind::String(_) | TokenKind::Char(_) => self.expect_string(),
+            TokenKind::False | TokenKind::True => self.expect_boolean(),
+
+            TokenKind::Nil => {
+                self.bump()?;
+                Ok(Expression::Nil { span: peek.span })
             }
+
+            TokenKind::LCurly => self.parse_set_literal(),
+
             TokenKind::Ident(_) => {
-                let first_ident = self.expect_ident()?;
-                match self.peek().kind {
-                    TokenKind::Dot => {
-                        self.bump();
-                        let second_ident = self.expect_ident()?;
-                        match self.peek().kind {
-                            TokenKind::Dot => {
-                                self.bump();
-                                let third_ident = self.expect_ident()?;
-                                let parameters = self.parse_actual_parameters()?;
-                                Ok(Designator {
-                                    target: QualifiedIdentifier {
-                                        first_ident: Some(first_ident.clone()),
-                                        second_ident: second_ident.clone(),
-                                        span: Span { start: first_ident.span.start, end: second_ident.span.end },
-                                    },
-                                    selector: Qualify { name: third_ident.clone(), span: third_ident.span },
-                                    parameters: parameters.clone(),
-                                    span: Span {
-                                        start: first_ident.span.start,
-                                        end: if parameters.is_none() {third_ident.span.end } else { parameters.unwrap().span.end}
-                                    },
-                                })
-                            }
-                            _ => {
-                                let parameters = self.parse_actual_parameters()?;
-
-                                Ok(Designator {
-                                    target: QualifiedIdentifier {
-                                        first_ident: None,
-                                        second_ident: first_ident.clone(),
-                                        span: first_ident.span,
-                                    },
-                                    selector: Qualify { name: second_ident.clone(), span: second_ident.span },
-                                    parameters: parameters.clone(),
-                                    span: Span {
-                                        start: first_ident.span.start,
-                                        end: if parameters.is_none() {second_ident.span.end } else { parameters.unwrap().span.end}
-                                    }
-                                })
-                            }
-
-                        }
-                    }
-                    _ => todo!()
-                }
+                let first = self.expect_ident()?;
+                self.parse_designator_or_error(first)
             }
-            _ => todo!(),
+
+            _ => Err(ParserError::UnexpectedToken { token: peek }),
+        }
+    }
+
+    fn parse_set_literal(&mut self) -> Result<Expression, ParserError> {
+        let lcurly = self.expect(TokenKind::LCurly)?;
+
+        let elements = self.comma_list_until(TokenKind::RCurly, |p| p.parse_element())?;
+        let rcurly = self.expect(TokenKind::RCurly)?;
+
+        Ok(Expression::Set {
+            value: elements.into_iter().map(Into::into).collect(),
+            span: Span::new(lcurly.span.start, rcurly.span.end),
+        })
+    }
+
+    /// Din gamle kode håndterede kun:
+    ///   Ident '.' Ident [ '.' Ident ] [ActualParameters]
+    /// og havde todo!() for "bare Ident".
+    ///
+    /// Her returnerer vi en pæn fejl, hvis det ikke er et designator-mønster.
+    fn parse_designator_or_error(&mut self, first: Identifier) -> Result<Expression, ParserError> {
+        if !self.at(&TokenKind::Dot) {
+            // samme semantik som din todo!(), bare uden panic:
+            let tok = self.peek()?.clone();
+            return Err(ParserError::UnexpectedToken { token: tok });
+        }
+
+        self.bump()?; // '.'
+        let second = self.expect_ident()?;
+
+        // 3-part: M.B.Bar(...)
+        if self.eat(TokenKind::Dot)?.is_some() {
+            let third = self.expect_ident()?;
+            let params = self.parse_actual_parameters()?;
+
+            let target_span = Span::new(first.span.start, second.span.end);
+            let end = params
+                .as_ref()
+                .map(|p| p.span.end)
+                .unwrap_or(third.span.end);
+
+            Ok(Designator {
+                target: QualifiedIdentifier {
+                    first_ident: Some(first),
+                    second_ident: second,
+                    span: target_span,
+                },
+                selector: Qualify {
+                    name: third.clone(),
+                    span: third.span,
+                },
+                parameters: params,
+                span: Span::new(target_span.start, end),
+            })
+        } else {
+            // 2-part: B.Bar(...)
+            let params = self.parse_actual_parameters()?;
+            let end = params
+                .as_ref()
+                .map(|p| p.span.end)
+                .unwrap_or(second.span.end);
+
+            Ok(Designator {
+                target: QualifiedIdentifier {
+                    first_ident: None,
+                    second_ident: first.clone(),
+                    span: first.span,
+                },
+                selector: Qualify {
+                    name: second.clone(),
+                    span: second.span,
+                },
+                parameters: params,
+                span: Span::new(first.span.start, end),
+            })
         }
     }
 
     fn parse_element(&mut self) -> Result<Element, ParserError> {
-        let first =self.parse_expression()?;
-        let second = if self.peek().kind == TokenKind::DotDot {
-            self.bump();
+        let first = self.parse_expression()?;
+        let second = if self.at(&TokenKind::DotDot) {
+            self.bump()?;
             Some(self.parse_expression()?)
-        } else { None};
-        let s = second.clone();
-        let span = Span::new(first.span().start, if s.is_some() { s.unwrap().span().end } else { first.span().end });
+        } else {
+            None
+        };
+
+        let end = second.as_ref().map(|e| e.span().end).unwrap_or(first.span().end);
+        let span = Span::new(first.span().start, end);
+
         Ok(Element {
             first_expression: first.into(),
-            second_expression: if second.is_some() { Some(second.unwrap().into()) } else { None },
+            second_expression: second.map(Into::into),
             span,
         })
     }
 
     fn parse_actual_parameters(&mut self) -> Result<Option<ActualParameters>, ParserError> {
-        match self.peek().kind {
-            LParen => {
-                let left_par = self.bump();
-                let mut expressions = vec![self.parse_expression()?];
-                while self.peek().kind == TokenKind::Comma {
-                    self.bump();
-                    expressions.push(self.parse_expression()?);
-                }
-
-                let right_par = self.expect_kind(RParen)?;
-                Ok(Some(
-                    ActualParameters{
-                        parameters: expressions,
-                        span: Span { start: left_par.span.start, end: right_par.span.end },
-                    }
-                ))
-            }
-            _ => Ok(None)
+        if !self.at(&TokenKind::LParen) {
+            return Ok(None);
         }
+
+        let lpar = self.bump()?;
+        let params = self.comma_list_until(TokenKind::RParen, |p| p.parse_expression())?;
+        let rpar = self.expect(TokenKind::RParen)?;
+
+        Ok(Some(ActualParameters {
+            parameters: params,
+            span: Span::new(lpar.span.start, rpar.span.end),
+        }))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::Parser;
     use crate::ast::{Declaration, Expression, Identifier, IdentifierDef, QualifiedIdentifier, Type};
     use crate::lexer::{Token, TokenKind};
     use crate::span::Span;
     use std::ops::Deref;
     use Expression::Int;
 
-    #[test]
-    fn parse_empty_module() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::End, Span::new(14, 17)),
-            Token::new(TokenKind::Ident("monkey2".to_string()), Span::new(17, 23)),
-            Token::new(TokenKind::Dot, Span::new(23, 24)),
-            Token::new(TokenKind::Eof, Span::new(24, 24))
+    // -------------------------
+    // Token helpers
+    // -------------------------
+
+    fn t(kind: TokenKind, start: usize, end: usize) -> Token {
+        Token::new(kind, Span::new(start, end))
+    }
+
+    fn ident(name: &str, start: usize, end: usize) -> Token {
+        t(TokenKind::Ident(name.to_string()), start, end)
+    }
+
+    fn int(v: i64, start: usize, end: usize) -> Token {
+        t(TokenKind::Int(v), start, end)
+    }
+
+    macro_rules! tok {
+    (Module $a:expr, $b:expr) => { t(TokenKind::Module, $a, $b) };
+    (Import $a:expr, $b:expr) => { t(TokenKind::Import, $a, $b) };
+    (Const  $a:expr, $b:expr) => { t(TokenKind::Const,  $a, $b) };
+    (Type   $a:expr, $b:expr) => { t(TokenKind::Type,   $a, $b) };
+    (Array  $a:expr, $b:expr) => { t(TokenKind::Array,  $a, $b) };
+    (Of     $a:expr, $b:expr) => { t(TokenKind::Of,     $a, $b) };
+
+    (Ident $s:literal, $a:expr, $b:expr) => { ident($s, $a, $b) };
+    (Int   $v:expr,    $a:expr, $b:expr) => { int($v, $a, $b) };
+
+    (Semi   $a:expr, $b:expr) => { t(TokenKind::SemiColon, $a, $b) };
+    (Comma  $a:expr, $b:expr) => { t(TokenKind::Comma,    $a, $b) };
+    (Assign $a:expr, $b:expr) => { t(TokenKind::Assign,   $a, $b) };
+    (Equal  $a:expr, $b:expr) => { t(TokenKind::Equal,    $a, $b) };
+    (Star   $a:expr, $b:expr) => { t(TokenKind::Star,     $a, $b) };
+    (Dot    $a:expr, $b:expr) => { t(TokenKind::Dot,      $a, $b) };
+    (DotDot $a:expr, $b:expr) => { t(TokenKind::DotDot,   $a, $b) };
+
+    (LParen $a:expr, $b:expr) => { t(TokenKind::LParen,   $a, $b) };
+    (RParen $a:expr, $b:expr) => { t(TokenKind::RParen,   $a, $b) };
+
+    (LCurly $a:expr, $b:expr) => { t(TokenKind::LCurly,   $a, $b) };
+    (RCurly $a:expr, $b:expr) => { t(TokenKind::RCurly,   $a, $b) };
+
+    (End $a:expr, $b:expr) => { t(TokenKind::End, $a, $b) };
+    (Eof $a:expr, $b:expr) => { t(TokenKind::Eof, $a, $b) };
+    }
+
+    // -------------------------
+    // Module wrapper + parse helper
+    // -------------------------
+
+    /// Wraps "body" tokens in:
+    /// MODULE <module_name> ; <body> END <end_name> . EOF
+    fn module_tokens(module_name: &str, end_name: &str, mut body: Vec<Token>) -> Vec<Token> {
+        // Keep the same header spans you used a lot (0..6, 7..13, 13..14)
+        let mut tokens = vec![
+            tok!(Module 0, 6),
+            tok!(Ident "DUMMY", 0, 0), // placeholder, overwritten below
+            tok!(Semi 13, 14),
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        tokens[1] = ident(module_name, 7, 13);
+
+        tokens.append(&mut body);
+
+        // Default tail spans (usually irrelevant for these tests)
+        tokens.extend([
+            tok!(End 1000, 1003),
+            ident(end_name, 1004, 1010),
+            tok!(Dot 1010, 1011),
+            tok!(Eof 1011, 1011),
+        ]);
+
+        tokens
+    }
+
+    fn parse_module(tokens: Vec<Token>) -> crate::ast::Module {
+        let mut parser = Parser { tokens: &tokens, pos: 0 };
+        parser.parse().unwrap()
+    }
+
+    // -------------------------
+    // Tests
+    // -------------------------
+
+    #[test]
+    fn parse_empty_module() {
+        let tokens = module_tokens("monkey", "monkey2", vec![]);
+        let module = parse_module(tokens);
+
         assert_eq!(module.first_ident.identifier, "monkey");
         assert_eq!(module.second_ident.identifier, "monkey2");
         assert_eq!(module.import_list.len(), 0);
@@ -417,29 +622,25 @@ mod tests {
 
     #[test]
     fn parse_import_list() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Import, Span::new(14, 20)),
-            Token::new(TokenKind::Ident("foo".to_string()), Span::new(21, 24)),
-            Token::new(TokenKind::Comma, Span::new(24, 25)),
-            Token::new(TokenKind::Ident("bar".to_string()), Span::new(26, 29)),
-            Token::new(TokenKind::Assign, Span::new(29, 30)),
-            Token::new(TokenKind::Ident("baz".to_string()), Span::new(31, 34)),
-            Token::new(TokenKind::SemiColon, Span::new(34, 35)),
-            Token::new(TokenKind::End, Span::new(35, 38)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(38, 44)),
-            Token::new(TokenKind::Dot, Span::new(44, 45)),
-            Token::new(TokenKind::Eof, Span::new(45, 45))
+        let body = vec![
+            tok!(Import 14, 20),
+            tok!(Ident "foo", 21, 24),
+            tok!(Comma 24, 25),
+            tok!(Ident "bar", 26, 29),
+            tok!(Assign 29, 30),
+            tok!(Ident "baz", 31, 34),
+            tok!(Semi 34, 35),
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
         assert_eq!(module.import_list.len(), 2);
+
         let first_import = module.import_list[0].clone();
         assert_eq!(first_import.first_ident.identifier, "foo");
         assert_eq!(first_import.second_ident, None);
+
         let second_import = module.import_list[1].clone();
         assert_eq!(second_import.first_ident.identifier, "bar");
         assert_eq!(second_import.second_ident.unwrap().identifier, "baz");
@@ -447,137 +648,108 @@ mod tests {
 
     #[test]
     fn parse_empty_const() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::End, Span::new(19, 22)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(23, 29)),
-            Token::new(TokenKind::Dot, Span::new(29, 30)),
-            Token::new(TokenKind::Eof, Span::new(30, 30))
+        let body = vec![
+            tok!(Const 14, 19),
+            // empty const section
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
         assert_eq!(module.declaration_sequence.len(), 0);
     }
 
     #[test]
     fn parse_single_const() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-            Token::new(TokenKind::Int(123), Span::new(24, 27)),
-            Token::new(TokenKind::SemiColon, Span::new(27, 28)),
-            Token::new(TokenKind::End, Span::new(28, 31)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(32, 38)),
-            Token::new(TokenKind::Dot, Span::new(38, 39)),
-            Token::new(TokenKind::Eof, Span::new(39, 39))
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Int 123, 24, 27),
+            tok!(Semi 27, 28),
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
         assert_eq!(module.declaration_sequence.len(), 1);
         assert!(matches!(
             &module.declaration_sequence[0],
-            Declaration::Const { ident: IdentifierDef { identifier: Identifier { identifier, ..}, .. }, .. }if identifier == "Foo"
+            Declaration::Const { ident: IdentifierDef { identifier: Identifier { identifier, .. }, .. }, .. }
+                if identifier == "Foo"
         ));
     }
 
     #[test]
     fn parse_multiple_const() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-            Token::new(TokenKind::Int(123), Span::new(24, 27)),
-            Token::new(TokenKind::SemiColon, Span::new(27, 28)),
-
-            Token::new(TokenKind::Ident("Bar".to_string()), Span::new(29, 32)),
-            Token::new(TokenKind::Star, Span::new(32, 33)),
-            Token::new(TokenKind::Equal, Span::new(33, 34)),
-            Token::new(TokenKind::Int(456), Span::new(34, 37)),
-            Token::new(TokenKind::SemiColon, Span::new(37, 38)),
-
-            Token::new(TokenKind::End, Span::new(38, 41)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(42, 48)),
-            Token::new(TokenKind::Dot, Span::new(48, 49)),
-            Token::new(TokenKind::Eof, Span::new(49, 49))
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Int 123, 24, 27),
+            tok!(Semi 27, 28),
+            tok!(Ident "Bar", 29, 32),
+            tok!(Star 32, 33),
+            tok!(Equal 33, 34),
+            tok!(Int 456, 34, 37),
+            tok!(Semi 37, 38),
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
         assert_eq!(module.declaration_sequence.len(), 2);
+
         assert!(matches!(
             &module.declaration_sequence[0],
-            Declaration::Const { ident: IdentifierDef { identifier: Identifier {identifier, ..}, star, ..}, .. } if identifier == "Foo" && !*star
+            Declaration::Const { ident: IdentifierDef { identifier: Identifier { identifier, .. }, star, .. }, .. }
+                if identifier == "Foo" && !*star
         ));
+
         assert!(matches!(
             &module.declaration_sequence[1],
-            Declaration::Const { ident: IdentifierDef { identifier: Identifier {identifier, ..}, star, ..}, .. } if identifier == "Bar" && *star
+            Declaration::Const { ident: IdentifierDef { identifier: Identifier { identifier, .. }, star, .. }, .. }
+                if identifier == "Bar" && *star
         ));
     }
 
     #[test]
     fn parse_empty_type() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Type, Span::new(14, 19)),
-            Token::new(TokenKind::End, Span::new(19, 22)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(23, 29)),
-            Token::new(TokenKind::Dot, Span::new(29, 30)),
-            Token::new(TokenKind::Eof, Span::new(30, 30))
+        let body = vec![
+            tok!(Type 14, 19),
+            // empty type section
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
         assert_eq!(module.declaration_sequence.len(), 0);
     }
 
     #[test]
     fn parse_named_type() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Type, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-            Token::new(TokenKind::Ident("M".to_string()),Span::new(24, 27)),
-            Token::new(TokenKind::Dot, Span::new(27, 29)),
-            Token::new(TokenKind::Ident("B".to_string()), Span::new(29, 30)),
-            Token::new(TokenKind::SemiColon, Span::new(30, 31)),
-            Token::new(TokenKind::End, Span::new(31, 32)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(32, 38)),
-            Token::new(TokenKind::Dot, Span::new(38, 39)),
-            Token::new(TokenKind::Eof, Span::new(39, 39))
+        let body = vec![
+            tok!(Type 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Ident "M", 24, 27),
+            tok!(Dot 27, 29),
+            tok!(Ident "B", 29, 30),
+            tok!(Semi 30, 31),
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
         assert_eq!(module.declaration_sequence.len(), 1);
         assert!(matches!(
             &module.declaration_sequence[0],
             Declaration::Type {
-                ident: IdentifierDef{ identifier: Identifier { ..}, .. },
+                ident: IdentifierDef { .. },
                 ty: Type::Named {
-                    name: QualifiedIdentifier {
-                        first_ident : Some(Identifier { identifier, ..}),
-                        second_ident,
-                        ..},
-                    .. },
+                    name: QualifiedIdentifier { first_ident: Some(Identifier { identifier, .. }), second_ident, .. },
+                    ..
+                },
                 ..
             } if identifier == "M" && second_ident.identifier == "B"
         ));
@@ -585,39 +757,40 @@ mod tests {
 
     #[test]
     fn parse_array_type() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Type, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-            Token::new(TokenKind::Array, Span::new(24, 29)),
-            Token::new(TokenKind::Int(2), Span::new(29, 31)),
-            Token::new(TokenKind::Comma, Span::new(31, 32)),
-            Token::new(TokenKind::Int(3), Span::new(32, 33)),
-            Token::new(TokenKind::Of, Span::new(33, 35)),
-            Token::new(TokenKind::Ident("T".to_string()),Span::new(36, 39)),
-            Token::new(TokenKind::SemiColon, Span::new(39, 40)),
-            Token::new(TokenKind::End, Span::new(40, 41)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(41, 47)),
-            Token::new(TokenKind::Dot, Span::new(47, 48)),
-            Token::new(TokenKind::Eof, Span::new(48, 48))
+        let body = vec![
+            tok!(Type 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Array 24, 29),
+            tok!(Int 2, 29, 31),
+            tok!(Comma 31, 32),
+            tok!(Int 3, 32, 33),
+            tok!(Of 33, 35),
+            tok!(Ident "T", 36, 39),
+            tok!(Semi 39, 40),
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
         assert_eq!(module.declaration_sequence.len(), 1);
         assert!(module.declaration_sequence[0].is_type());
-        let (n, t) = module.declaration_sequence[0].as_type().unwrap();
+
+        let (n, tpe) = module.declaration_sequence[0].as_type().unwrap();
         assert_eq!(n.identifier.identifier, "Foo");
         assert_eq!(n.star, false);
-        assert!(t.is_array());
-        let (lengths, base) = t.as_array().unwrap();
-        assert_eq!(lengths, vec![
-            Int{ value: 2, span: Span::new(29, 31)},
-            Int{ value:3, span: Span::new(32, 33)}
-        ]);
+
+        assert!(tpe.is_array());
+        let (lengths, base) = tpe.as_array().unwrap();
+
+        assert_eq!(
+            lengths,
+            vec![
+                Int { value: 2, span: Span::new(29, 31) },
+                Int { value: 3, span: Span::new(32, 33) }
+            ]
+        );
+
         assert!(base.is_named());
         let named = base.as_named().unwrap();
         assert_eq!(named.first_ident, None);
@@ -626,69 +799,71 @@ mod tests {
 
     #[test]
     fn parse_set_const() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-            Token::new(TokenKind::LCurly, Span::new(24, 26)),
-            Token::new(TokenKind::Int(1), Span::new(26, 27)),
-            Token::new(TokenKind::Comma, Span::new(27, 28)),
-            Token::new(TokenKind::Int(2), Span::new(28, 29)),
-            Token::new(TokenKind::DotDot, Span::new(29, 31)),
-            Token::new(TokenKind::Int(3), Span::new(31, 32)),
-            Token::new(TokenKind::RCurly, Span::new(32, 33)),
-            Token::new(TokenKind::SemiColon, Span::new(27, 28)),
-            Token::new(TokenKind::End, Span::new(28, 31)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(32, 38)),
-            Token::new(TokenKind::Dot, Span::new(38, 39)),
-            Token::new(TokenKind::Eof, Span::new(39, 39))
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(LCurly 24, 26),
+            tok!(Int 1, 26, 27),
+            tok!(Comma 27, 28),
+            tok!(Int 2, 28, 29),
+            tok!(DotDot 29, 31),
+            tok!(Int 3, 31, 32),
+            tok!(RCurly 32, 33),
+            tok!(Semi 27, 28),
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
         assert_eq!(module.declaration_sequence.len(), 1);
         assert!(module.declaration_sequence[0].is_const());
+
         let e = module.declaration_sequence[0].as_const().unwrap().1;
         assert!(e.is_set());
+
         let set = e.as_set().unwrap();
         assert_eq!(set.len(), 2);
-        assert_eq!(*set[0].first_expression.deref(), Int { value: 1, span: Span::new(26, 27)});
-        assert!(set[0].second_expression.is_none());
-        assert_eq!(*set[1].first_expression.deref(), Int { value: 2, span: Span::new(28, 29)});
-        assert_eq!(*set[1].second_expression.clone().unwrap().deref(), Int { value: 3, span: Span::new(31, 32)});
 
+        assert_eq!(
+            *set[0].first_expression.deref(),
+            Int { value: 1, span: Span::new(26, 27) }
+        );
+        assert!(set[0].second_expression.is_none());
+
+        assert_eq!(
+            *set[1].first_expression.deref(),
+            Int { value: 2, span: Span::new(28, 29) }
+        );
+        assert_eq!(
+            *set[1].second_expression.clone().unwrap().deref(),
+            Int { value: 3, span: Span::new(31, 32) }
+        );
     }
 
     #[test]
     fn parse_three_part_qualified_designator_const() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-            Token::new(TokenKind::Ident("M".to_string()), Span::new(24, 27)),
-            Token::new(TokenKind::Dot, Span::new(27, 29)),
-            Token::new(TokenKind::Ident("B".to_string()), Span::new(29, 30)),
-            Token::new(TokenKind::Dot, Span::new(30, 31)),
-            Token::new(TokenKind::Ident("Bar".to_string()), Span::new(31, 34)),
-            Token::new(TokenKind::SemiColon, Span::new(34, 35)),
-            Token::new(TokenKind::End, Span::new(35, 38)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(39, 45)),
-            Token::new(TokenKind::Dot, Span::new(45, 46)),
-            Token::new(TokenKind::Eof, Span::new(46, 46))
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Ident "M", 24, 27),
+            tok!(Dot 27, 29),
+            tok!(Ident "B", 29, 30),
+            tok!(Dot 30, 31),
+            tok!(Ident "Bar", 31, 34),
+            tok!(Semi 34, 35),
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
         assert_eq!(module.declaration_sequence.len(), 1);
         assert!(module.declaration_sequence[0].is_const());
+
         let e = module.declaration_sequence[0].as_const().unwrap().1;
         assert!(e.is_designator());
+
         let (identifier, selector, parameters) = e.as_designator().unwrap();
         assert_eq!(identifier.first_ident.as_ref().unwrap().identifier, "M".to_string());
         assert_eq!(identifier.second_ident.identifier, "B".to_string());
@@ -699,41 +874,38 @@ mod tests {
 
     #[test]
     fn parse_three_part_qualified_designator_with_parameters_const() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-            Token::new(TokenKind::Ident("M".to_string()), Span::new(24, 27)),
-            Token::new(TokenKind::Dot, Span::new(27, 29)),
-            Token::new(TokenKind::Ident("B".to_string()), Span::new(29, 30)),
-            Token::new(TokenKind::Dot, Span::new(30, 31)),
-            Token::new(TokenKind::Ident("Bar".to_string()), Span::new(31, 34)),
-            Token::new(TokenKind::LParen, Span::new(34, 35)),
-            Token::new(TokenKind::Int(1), Span::new(35, 36)),
-            Token::new(TokenKind::Comma, Span::new(36, 37)),
-            Token::new(TokenKind::Int(2), Span::new(37, 38)),
-            Token::new(TokenKind::RParen, Span::new(38, 39)),
-            Token::new(TokenKind::SemiColon, Span::new(39, 40)),
-            Token::new(TokenKind::End, Span::new(40, 43)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(44, 50)),
-            Token::new(TokenKind::Dot, Span::new(50, 51)),
-            Token::new(TokenKind::Eof, Span::new(51, 51))
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Ident "M", 24, 27),
+            tok!(Dot 27, 29),
+            tok!(Ident "B", 29, 30),
+            tok!(Dot 30, 31),
+            tok!(Ident "Bar", 31, 34),
+            tok!(LParen 34, 35),
+            tok!(Int 1, 35, 36),
+            tok!(Comma 36, 37),
+            tok!(Int 2, 37, 38),
+            tok!(RParen 38, 39),
+            tok!(Semi 39, 40),
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
         assert_eq!(module.declaration_sequence.len(), 1);
         assert!(module.declaration_sequence[0].is_const());
+
         let e = module.declaration_sequence[0].as_const().unwrap().1;
         assert!(e.is_designator());
+
         let (identifier, selector, parameters) = e.as_designator().unwrap();
         assert_eq!(identifier.first_ident.as_ref().unwrap().identifier, "M".to_string());
         assert_eq!(identifier.second_ident.identifier, "B".to_string());
         assert!(selector.is_qualified());
         assert_eq!(selector.as_qualified().unwrap().identifier, "Bar".to_string());
+
         assert!(parameters.is_some());
         let v = parameters.as_ref().unwrap();
         assert_eq!(v.parameters.len(), 2);
@@ -743,29 +915,25 @@ mod tests {
 
     #[test]
     fn parse_two_part_qualified_designator_const() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-            Token::new(TokenKind::Ident("B".to_string()), Span::new(24, 25)),
-            Token::new(TokenKind::Dot, Span::new(25, 26)),
-            Token::new(TokenKind::Ident("Bar".to_string()), Span::new(26, 29)),
-            Token::new(TokenKind::SemiColon, Span::new(29, 30)),
-            Token::new(TokenKind::End, Span::new(30, 33)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(34, 40)),
-            Token::new(TokenKind::Dot, Span::new(40, 41)),
-            Token::new(TokenKind::Eof, Span::new(41, 41))
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Ident "B", 24, 25),
+            tok!(Dot 25, 26),
+            tok!(Ident "Bar", 26, 29),
+            tok!(Semi 29, 30),
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
         assert_eq!(module.declaration_sequence.len(), 1);
         assert!(module.declaration_sequence[0].is_const());
+
         let e = module.declaration_sequence[0].as_const().unwrap().1;
         assert!(e.is_designator());
+
         let (identifier, selector, parameters) = e.as_designator().unwrap();
         assert_eq!(identifier.first_ident, None);
         assert_eq!(identifier.second_ident.identifier, "B".to_string());
@@ -776,37 +944,34 @@ mod tests {
 
     #[test]
     fn parse_two_part_qualified_designator_with_aparameters_const() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-            Token::new(TokenKind::Ident("B".to_string()), Span::new(24, 25)),
-            Token::new(TokenKind::Dot, Span::new(25, 26)),
-            Token::new(TokenKind::Ident("Bar".to_string()), Span::new(26, 29)),
-            Token::new(TokenKind::LParen, Span::new(29, 30)),
-            Token::new(TokenKind::Int(10), Span::new(30, 31)),
-            Token::new(TokenKind::RParen, Span::new(31, 32)),
-            Token::new(TokenKind::SemiColon, Span::new(32, 33)),
-            Token::new(TokenKind::End, Span::new(33, 36)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(37, 43)),
-            Token::new(TokenKind::Dot, Span::new(43, 44)),
-            Token::new(TokenKind::Eof, Span::new(44, 44))
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Ident "B", 24, 25),
+            tok!(Dot 25, 26),
+            tok!(Ident "Bar", 26, 29),
+            tok!(LParen 29, 30),
+            tok!(Int 10, 30, 31),
+            tok!(RParen 31, 32),
+            tok!(Semi 32, 33),
         ];
 
-        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
-        let module = parser.parse().unwrap();
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
         assert_eq!(module.declaration_sequence.len(), 1);
         assert!(module.declaration_sequence[0].is_const());
+
         let e = module.declaration_sequence[0].as_const().unwrap().1;
         assert!(e.is_designator());
+
         let (identifier, selector, parameters) = e.as_designator().unwrap();
         assert_eq!(identifier.first_ident, None);
         assert_eq!(identifier.second_ident.identifier, "B".to_string());
         assert!(selector.is_qualified());
         assert_eq!(selector.as_qualified().unwrap().identifier, "Bar".to_string());
+
         assert!(parameters.is_some());
         let v = parameters.as_ref().unwrap();
         assert_eq!(v.parameters.len(), 1);
