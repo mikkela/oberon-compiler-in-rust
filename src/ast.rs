@@ -1,143 +1,118 @@
 use crate::span::Span;
 
+// -------------------------
+// Common
+// -------------------------
+
+pub trait Spanned {
+    fn span(&self) -> Span;
+}
+
+// -------------------------
+// Identifiers
+// -------------------------
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Identifier {
-    pub identifier: String,
+    pub text: String,
     pub span: Span,
+}
+
+impl Spanned for Identifier {
+    fn span(&self) -> Span { self.span }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IdentifierDef {
-    pub identifier: Identifier,
-    pub star: bool,
+    pub ident: Identifier,
+    pub exported: bool, // star
     pub span: Span,
 }
 
+impl Spanned for IdentifierDef {
+    fn span(&self) -> Span { self.span }
+}
+
+/// Instead of (Option<Identifier>, Identifier), we store the parts.
+/// In classic Oberon you’ll typically have 1 or 2 parts, but this scales.
 #[derive(Clone, Debug, PartialEq)]
 pub struct QualifiedIdentifier {
-    pub first_ident: Option<Identifier>,
-    pub second_ident: Identifier,
-    pub span: Span,
+    pub parts: Vec<Identifier>, // len >= 1
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Element {
-    pub first_expression: Box<Expression>,
-    pub second_expression: Option<Box<Expression>>,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Selector {
-    Qualify { name: Identifier, span: Span },
-    Index { expressions: Vec<Box<Expression>>, span: Span },
-    Dereference { span: Span },
-    Subscription { parameters: Vec<QualifiedIdentifier>, span: Span },
-}
-
-impl Selector {
-    pub fn span(&self) -> Span {
-        match self {
-            Selector::Qualify { span, .. } => *span,
-            Selector::Index { span, .. } => *span,
-            Selector::Dereference { span, .. } => *span,
-            Selector::Subscription { span, .. } => *span,
-        }
+impl QualifiedIdentifier {
+    pub fn new(parts: Vec<Identifier>) -> Self {
+        debug_assert!(!parts.is_empty());
+        Self { parts }
     }
 
-    pub fn is_subscription(&self) -> bool {
-        matches!(self, Selector::Subscription { .. })
+    pub fn first(&self) -> Option<&Identifier> {
+        if self.parts.len() >= 2 { Some(&self.parts[0]) } else { None }
     }
 
-    pub fn as_subscription(&self) -> Option<&Vec<QualifiedIdentifier>> {
-        match self {
-            Selector::Subscription { parameters, .. } => Some(parameters),
-            _ => None,
-        }
-    }
-
-    pub fn is_qualified(&self) -> bool {
-        matches!(self, Selector::Qualify { .. })
-    }
-
-    pub fn as_qualified(&self) -> Option<&Identifier> {
-        match self {
-            Selector::Qualify { name, .. } => Some(name),
-            _ => None,
-        }
-    }
-
-    pub fn is_index(&self) -> bool {
-        matches!(self, Selector::Index { .. })
-    }
-
-    pub fn as_index(&self) -> Option<&Vec<Box<Expression>>> {
-        match self {
-            Selector::Index { expressions, .. } => Some(expressions),
-            _ => None,
-        }
-    }
-
-    pub fn is_dereference(&self) -> bool {
-        matches!(self, Selector::Dereference { .. })
-    }
-    pub fn as_dereference(&self) -> Option<()> {
-        match self {
-            Selector::Dereference { .. } => Some(()),
-            _ => None,
-        }
+    pub fn last(&self) -> &Identifier {
+        self.parts.last().unwrap()
     }
 }
+
+impl Spanned for QualifiedIdentifier {
+    fn span(&self) -> Span {
+        let start = self.parts.first().unwrap().span.start;
+        let end = self.parts.last().unwrap().span.end;
+        Span::new(start, end)
+    }
+}
+
+// -------------------------
+// Module / Imports
+// -------------------------
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Module {
-    pub first_ident: Identifier,
-    pub second_ident: Identifier,
+    pub name: Identifier,
+    pub end_name: Identifier,
     pub import_list: Vec<Import>,
-    pub declaration_sequence: Vec<Declaration>,
+    pub declarations: Vec<Declaration>,
     pub stmts: Vec<Statement>,
     pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Import {
-    pub first_ident: Identifier,
-    pub second_ident: Option<Identifier>,
+    pub module: Identifier,
+    pub alias: Option<Identifier>,
     pub span: Span,
 }
 
+// -------------------------
+// Declarations
+// -------------------------
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Declaration {
-    Const { ident: IdentifierDef, expression: Expression, span: Span },
-    Type { ident: IdentifierDef, ty: Type, span: Span },
-    Var { name: String, ty: TypeReference, span: Span },
-    Proc { name: String, params: Vec<Parameter>, ret: Option<TypeReference>, body: Vec<Statement>, span: Span },
+    Const { ident: IdentifierDef, value: Expression, span: Span },
+    Type  { ident: IdentifierDef, ty: Type, span: Span },
+
+    // Keep placeholders (you can evolve them later)
+    Var   { ident: IdentifierDef, ty: TypeReference, span: Span },
+    Proc  { ident: IdentifierDef, params: Vec<Parameter>, ret: Option<TypeReference>, body: Vec<Statement>, span: Span },
 }
 
-impl Declaration {
-    pub fn is_const(&self) -> bool {
-        matches!(self, Declaration::Const { .. })
-    }
-
-    pub fn as_const(&self) -> Option<(&IdentifierDef, &Expression)> {
+impl Spanned for Declaration {
+    fn span(&self) -> Span {
         match self {
-            Declaration::Const { ident, expression, .. } =>
-                Some((ident, expression)),
-            _ => None,
-        }
-    }
-
-    pub fn is_type(&self) -> bool {
-        matches!(self, Declaration::Type { .. })
-    }
-
-    pub fn as_type(&self) -> Option<(&IdentifierDef, &Type)> {
-        match self {
-            Declaration::Type { ident, ty, .. } =>
-                Some((ident, ty)),
-            _ => None,
+            Declaration::Const { span, .. } => *span,
+            Declaration::Type  { span, .. } => *span,
+            Declaration::Var   { span, .. } => *span,
+            Declaration::Proc  { span, .. } => *span,
         }
     }
 }
+
+// -------------------------
+// Types
+// -------------------------
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FieldList {
     pub fields: Vec<IdentifierDef>,
@@ -145,87 +120,142 @@ pub struct FieldList {
     pub span: Span,
 }
 
+impl Spanned for FieldList {
+    fn span(&self) -> Span { self.span }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Type {
-    Named { name: QualifiedIdentifier, span: Span },
-    Array { lengths: Vec<Expression>, element: Box<Type>, span: Span },
-    Record { base: Option<QualifiedIdentifier>, field_lists: Vec<FieldList>, span: Span },
+    Named   { name: QualifiedIdentifier, span: Span },
+    Array   { lengths: Vec<Expression>, element: Box<Type>, span: Span },
+    Record  { base: Option<QualifiedIdentifier>, field_lists: Vec<FieldList>, span: Span },
     Pointer { pointee: Box<Type>, span: Span },
 }
 
-impl Type {
-    pub fn span(&self) -> Span {
-        if self.is_array() {
-            self.as_array().unwrap().1.span()
-        } else if self.is_named() {
-            self.as_named().unwrap().span
-        }
-        else {
-            Span::new(0, 0)
-        }
-    }
-    pub fn is_named(&self) -> bool {
-        matches!(self, Type::Named { .. })
-    }
-
-    pub fn is_array(&self) -> bool {
-        matches!(self, Type::Array { .. })
-    }
-
-    pub fn as_named(&self) -> Option<&QualifiedIdentifier> {
+impl Spanned for Type {
+    fn span(&self) -> Span {
         match self {
-            Type::Named { name, .. } => Some(name),
-            _ => None,
-        }
-    }
-
-    pub fn as_array(&self) -> Option<(&[Expression], &Box<Type>)> {
-        match self {
-            Type::Array { lengths, element, .. } => Some((lengths, element)),
-            _ => None,
+            Type::Named { span, .. } => *span,
+            Type::Array { span, .. } => *span,
+            Type::Record { span, .. } => *span,
+            Type::Pointer { span, .. } => *span,
         }
     }
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeReference {
+    pub name: QualifiedIdentifier,
+    pub span: Span,
+}
+
+impl Spanned for TypeReference {
+    fn span(&self) -> Span { self.span }
+}
+
+// -------------------------
+// Statements
+// -------------------------
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Parameter {
-    pub name: String,
+    pub name: IdentifierDef,
     pub ty: TypeReference,
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Statement {
-    Assign { target: String, value: Expression, span: Span },
-    Call { name: String, args: Vec<Expression>, span: Span },
-    Return { value: Option<Expression>, span: Span },
+impl Spanned for Parameter {
+    fn span(&self) -> Span { self.span }
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct ActualParameters {
-    pub parameters: Vec<Expression>,
+pub enum Statement {
+    Assign { target: Designator, value: Expression, span: Span },
+    Call   { callee: Designator, span: Span },
+    Return { value: Option<Expression>, span: Span },
+}
+
+impl Spanned for Statement {
+    fn span(&self) -> Span {
+        match self {
+            Statement::Assign { span, .. } => *span,
+            Statement::Call   { span, .. } => *span,
+            Statement::Return { span, .. } => *span,
+        }
+    }
+}
+
+// -------------------------
+// Designators & selectors
+// -------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Designator {
+    pub head: QualifiedIdentifier,
+    pub selectors: Vec<Selector>, // 0..n
     pub span: Span,
+}
+
+impl Spanned for Designator {
+    fn span(&self) -> Span { self.span }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Selector {
+    Field(Identifier),          // .x
+    Index(Vec<Expression>),     // [e1, e2]
+    Deref(Span),                // ^
+    Call(Vec<Expression>, Span) // (args)
+}
+
+impl Spanned for Selector {
+    fn span(&self) -> Span {
+        match self {
+            Selector::Field(id) => id.span(),
+            Selector::Index(exprs) => {
+                // you might want to store explicit span; this is “best effort”
+                let start = exprs.first().map(|e| e.span().start).unwrap_or(0);
+                let end   = exprs.last().map(|e| e.span().end).unwrap_or(0);
+                Span::new(start, end)
+            }
+            Selector::Deref(span) => *span,
+            Selector::Call(_, span) => *span,
+        }
+    }
+}
+
+// -------------------------
+// Expressions
+// -------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Element {
+    pub first: Expression,
+    pub second: Option<Expression>,
+    pub span: Span,
+}
+
+impl Spanned for Element {
+    fn span(&self) -> Span { self.span }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expression {
-    Int { value: i64, span: Span},
-    Real { value: f64, span: Span},
-    String { value: String, span: Span},
-    Bool { value: bool, span: Span},
-    Nil { span: Span},
-    Set { value: Vec<Box<Element>>, span: Span},
-    Designator {
-        target: QualifiedIdentifier,
-        selector: Selector,
-        parameters: Option<ActualParameters>,
-        span: Span
-    },
-    //Ident(String, Span),
+    Int    { value: i64, span: Span },
+    Real   { value: f64, span: Span },
+    String { value: String, span: Span },
+    Bool   { value: bool, span: Span },
+    Nil    { span: Span },
+
+    Set { elements: Vec<Element>, span: Span },
+
+    Designator(Designator),
+
     Binary { op: BinaryOperation, lhs: Box<Expression>, rhs: Box<Expression>, span: Span },
 }
 
-impl Expression {
-    pub fn span(&self) -> Span {
+impl Spanned for Expression {
+    fn span(&self) -> Span {
         match self {
             Expression::Int { span, .. } => *span,
             Expression::Real { span, .. } => *span,
@@ -233,41 +263,13 @@ impl Expression {
             Expression::Bool { span, .. } => *span,
             Expression::Nil { span } => *span,
             Expression::Set { span, .. } => *span,
+            Expression::Designator(d) => d.span(),
             Expression::Binary { span, .. } => *span,
-            Expression::Designator { span, .. } => *span,
         }
     }
-
-    pub fn is_set(&self) -> bool {
-        matches!(self, Expression::Set { .. })
-    }
-
-    pub fn as_set(&self) -> Option<&Vec<Box<Element>>> {
-        match self {
-            Expression::Set { value, .. } => Some(value),
-            _ => None,
-        }
-    }
-
-    pub fn is_designator(&self) -> bool {
-        matches!(self, Expression::Designator { .. })
-    }
-
-    pub fn as_designator(&self) -> Option<(&QualifiedIdentifier, &Selector, &Option<ActualParameters>)> {
-        match self {
-            Expression::Designator { target, selector, parameters, .. } => Some((target, selector, parameters)),
-            _ => None,
-        }
-    }
-
 }
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BinaryOperation {
     Add, Sub, Mul, Div,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct TypeReference {
-    pub name: String,
-    pub span: Span,
 }

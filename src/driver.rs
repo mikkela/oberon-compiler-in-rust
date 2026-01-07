@@ -26,7 +26,7 @@ pub fn compile_file(path: &Path, opts: CompileOptions) -> Result<()> {
     let checked = semantics::check(ast)?;
 
     // Lower til IR (dummy)
-    let ir_mod = ir::lower(checked.module.first_ident.identifier.clone());
+    let ir_mod = ir::lower(checked.module.name.text.clone());
 
     // “Serialize” IR til tekst (midlertidigt)
     let ir_text = format!("{:#?}", ir_mod);

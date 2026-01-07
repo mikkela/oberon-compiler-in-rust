@@ -33,10 +33,10 @@ pub fn parse_module(src: &SourceFile, tokens: &[Token]) -> Result<Module> {
     // Find END (meget naïvt)
     let end_span = tokens.last().map(|t| t.span).unwrap_or(Span::new(0, 0));
     Ok(Module {
-        first_ident: Identifier { identifier: name.clone(), span: Span { start: 0, end: 0 } },
-        second_ident: Identifier { identifier: name.clone(), span: Span { start: 0, end: 0 } },
+        name: Identifier { text: name.clone(), span: Span { start: 0, end: 0 } },
+        end_name: Identifier { text: name.clone(), span: Span { start: 0, end: 0 } },
         import_list: vec![],
-        declaration_sequence: vec![],
+        declarations: vec![],
         stmts: vec![],
         span: Span { start: 0, end: end_span.end },
     })

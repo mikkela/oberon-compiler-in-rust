@@ -1,13 +1,12 @@
-use crate::ast::Expression::Designator;
-use crate::ast::Selector::Qualify;
+use crate::ast::Spanned;
 use crate::ast::{
-    ActualParameters, Declaration, Element, Expression, Identifier, IdentifierDef, Import, Module,
+    Declaration, Element, Expression, Identifier, IdentifierDef, Import, Module,
     QualifiedIdentifier, Type,
 };
-use crate::lexer::TokenKind::{Array, Ident, LParen, RParen};
+use crate::lexer::TokenKind::{Array, Ident};
 use crate::lexer::{Token, TokenKind};
 use crate::span::Span;
-use thiserror::Error;
+use thiserror::{Error};
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ParserError {
@@ -16,9 +15,6 @@ pub enum ParserError {
 
     #[error("Unexpected end of file")]
     UnexpectedEof,
-
-    #[error("Invalid name '{name}'")]
-    InvalidName { name: String },
 }
 
 pub struct Parser<'a> {
@@ -77,7 +73,7 @@ impl<'a> Parser<'a> {
             TokenKind::Ident(name) => {
                 self.pos += 1;
                 Ok(Identifier {
-                    identifier: name.clone(),
+                    text: name.clone(),
                     span: tok.span,
                 })
             }
@@ -178,9 +174,9 @@ impl<'a> Parser<'a> {
         };
 
         IdentifierDef {
-            identifier: name,
-            star: star_tok.is_some(),
+            ident: name,
             span,
+            exported: star_tok.is_some(),
         }
     }
 
@@ -229,12 +225,12 @@ impl<'a> Parser<'a> {
         let end = self.expect(TokenKind::Dot)?;
 
         Ok(Module {
-            first_ident,
-            second_ident,
+            name: first_ident,
             import_list,
-            declaration_sequence,
             stmts: vec![],
             span: Span::new(begin.span.start, end.span.end),
+            end_name: second_ident,
+            declarations: declaration_sequence,
         })
     }
 
@@ -253,31 +249,37 @@ impl<'a> Parser<'a> {
         self.bump()?; // IMPORT
 
         let mut imports = vec![];
+
         while !self.at(&TokenKind::SemiColon) {
             if !imports.is_empty() {
                 self.expect(TokenKind::Comma)?;
             }
 
-            let first_ident = self.expect_ident()?;
-            let span_begin = first_ident.span.start;
+            // Første ident: enten module (IMPORT M;) eller alias (IMPORT A := M;)
+            let first = self.expect_ident()?;
 
-            let second_ident = if self.at(&TokenKind::Assign) {
+            let imp = if self.at(&TokenKind::Assign) {
                 self.bump()?; // :=
-                Some(self.expect_ident()?)
+                let module = self.expect_ident()?; // det rigtige modulnavn (Bar)
+
+                let span = Span::new(first.span.start, module.span.end);
+
+                Import {
+                    module,
+                    alias: Some(first),
+                    span,
+                }
             } else {
-                None
+                let span = first.span;
+
+                Import {
+                    module: first,
+                    alias: None,
+                    span,
+                }
             };
 
-            let span_end = second_ident
-                .as_ref()
-                .map(|i| i.span.end)
-                .unwrap_or(first_ident.span.end);
-
-            imports.push(Import {
-                first_ident,
-                second_ident,
-                span: Span::new(span_begin, span_end),
-            });
+            imports.push(imp);
         }
 
         self.expect(TokenKind::SemiColon)?;
@@ -290,7 +292,7 @@ impl<'a> Parser<'a> {
             |p| p.parse_expression(),
             |ident, expression, span| Declaration::Const {
                 ident,
-                expression,
+                value: expression,
                 span,
             },
         )
@@ -314,31 +316,19 @@ impl<'a> Parser<'a> {
         match peek.kind {
             Ident(_) => {
                 // Named type: Ident | Ident '.' Ident
-                let first_or_second = self.expect_ident()?;
-                if self.at(&TokenKind::Dot) {
-                    self.bump()?; // .
-                    let second_ident = self.expect_ident()?;
-                    let span = Span::new(first_or_second.span.start, second_ident.span.end);
+                let first = self.expect_ident()?;
 
-                    Ok(Type::Named {
-                        name: QualifiedIdentifier {
-                            first_ident: Some(first_or_second),
-                            second_ident,
-                            span,
-                        },
-                        span,
-                    })
+                let name = if self.at(&TokenKind::Dot) {
+                    self.bump()?; // '.'
+                    let second = self.expect_ident()?;
+                    QualifiedIdentifier::new(vec![first, second])
                 } else {
-                    let span = first_or_second.span;
-                    Ok(Type::Named {
-                        name: QualifiedIdentifier {
-                            first_ident: None,
-                            second_ident: first_or_second,
-                            span,
-                        },
-                        span,
-                    })
-                }
+                    QualifiedIdentifier::new(vec![first])
+                };
+
+                let span = name.span();
+
+                Ok(Type::Named { name, span })
             }
 
             Array => {
@@ -413,7 +403,7 @@ impl<'a> Parser<'a> {
         let rcurly = self.expect(TokenKind::RCurly)?;
 
         Ok(Expression::Set {
-            value: elements.into_iter().map(Into::into).collect(),
+            elements,
             span: Span::new(lcurly.span.start, rcurly.span.end),
         })
     }
@@ -424,8 +414,8 @@ impl<'a> Parser<'a> {
     ///
     /// Her returnerer vi en pæn fejl, hvis det ikke er et designator-mønster.
     fn parse_designator_or_error(&mut self, first: Identifier) -> Result<Expression, ParserError> {
+        // kræv at det er et designator-mønster (din gamle todo!)
         if !self.at(&TokenKind::Dot) {
-            // samme semantik som din todo!(), bare uden panic:
             let tok = self.peek()?.clone();
             return Err(ParserError::UnexpectedToken { token: tok });
         }
@@ -433,51 +423,51 @@ impl<'a> Parser<'a> {
         self.bump()?; // '.'
         let second = self.expect_ident()?;
 
-        // 3-part: M.B.Bar(...)
+        // 3-part: M.B.Bar(args?)
         if self.eat(TokenKind::Dot)?.is_some() {
-            let third = self.expect_ident()?;
-            let params = self.parse_actual_parameters()?;
+            let third = self.expect_ident()?; // field name
+            let mut selectors = vec![crate::ast::Selector::Field(third.clone())];
 
-            let target_span = Span::new(first.span.start, second.span.end);
-            let end = params
-                .as_ref()
-                .map(|p| p.span.end)
+            // optional call
+            if let Some((args, call_span)) = self.parse_call_args()? {
+                selectors.push(crate::ast::Selector::Call(args, call_span));
+            }
+
+            let head = crate::ast::QualifiedIdentifier::new(vec![first, second]);
+            let end = selectors
+                .last()
+                .map(|s| s.span().end)
                 .unwrap_or(third.span.end);
 
-            Ok(Designator {
-                target: QualifiedIdentifier {
-                    first_ident: Some(first),
-                    second_ident: second,
-                    span: target_span,
-                },
-                selector: Qualify {
-                    name: third.clone(),
-                    span: third.span,
-                },
-                parameters: params,
-                span: Span::new(target_span.start, end),
-            })
-        } else {
-            // 2-part: B.Bar(...)
-            let params = self.parse_actual_parameters()?;
-            let end = params
-                .as_ref()
-                .map(|p| p.span.end)
-                .unwrap_or(second.span.end);
+            let span = Span::new(head.span().start, end);
 
-            Ok(Designator {
-                target: QualifiedIdentifier {
-                    first_ident: None,
-                    second_ident: first.clone(),
-                    span: first.span,
-                },
-                selector: Qualify {
-                    name: second.clone(),
-                    span: second.span,
-                },
-                parameters: params,
-                span: Span::new(first.span.start, end),
-            })
+            Ok(crate::ast::Expression::Designator(crate::ast::Designator {
+                head,
+                selectors,
+                span,
+            }))
+        } else {
+            // 2-part: B.Bar(args?)
+            let field = second;
+            let mut selectors = vec![crate::ast::Selector::Field(field.clone())];
+
+            if let Some((args, call_span)) = self.parse_call_args()? {
+                selectors.push(crate::ast::Selector::Call(args, call_span));
+            }
+
+            let head = crate::ast::QualifiedIdentifier::new(vec![first]);
+            let end = selectors
+                .last()
+                .map(|s| s.span().end)
+                .unwrap_or(field.span.end);
+
+            let span = Span::new(head.span().start, end);
+
+            Ok(crate::ast::Expression::Designator(crate::ast::Designator {
+                head,
+                selectors,
+                span,
+            }))
         }
     }
 
@@ -494,35 +484,27 @@ impl<'a> Parser<'a> {
         let span = Span::new(first.span().start, end);
 
         Ok(Element {
-            first_expression: first.into(),
-            second_expression: second.map(Into::into),
+            first,
             span,
+            second,
         })
     }
 
-    fn parse_actual_parameters(&mut self) -> Result<Option<ActualParameters>, ParserError> {
-        if !self.at(&TokenKind::LParen) {
-            return Ok(None);
-        }
-
+    fn parse_call_args(&mut self) -> Result<Option<(Vec<Expression>, Span)>, ParserError> {
+        if !self.at(&TokenKind::LParen) { return Ok(None); }
         let lpar = self.bump()?;
-        let params = self.comma_list_until(TokenKind::RParen, |p| p.parse_expression())?;
+        let args = self.comma_list_until(TokenKind::RParen, |p| p.parse_expression())?;
         let rpar = self.expect(TokenKind::RParen)?;
-
-        Ok(Some(ActualParameters {
-            parameters: params,
-            span: Span::new(lpar.span.start, rpar.span.end),
-        }))
+        Ok(Some((args, Span::new(lpar.span.start, rpar.span.end))))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Parser;
-    use crate::ast::{Declaration, Expression, Identifier, IdentifierDef, QualifiedIdentifier, Type};
+    use crate::ast::{Declaration, Expression, Identifier, IdentifierDef, Selector, Type};
     use crate::lexer::{Token, TokenKind};
     use crate::span::Span;
-    use std::ops::Deref;
     use Expression::Int;
 
     // -------------------------
@@ -613,11 +595,11 @@ mod tests {
         let tokens = module_tokens("monkey", "monkey2", vec![]);
         let module = parse_module(tokens);
 
-        assert_eq!(module.first_ident.identifier, "monkey");
-        assert_eq!(module.second_ident.identifier, "monkey2");
+        assert_eq!(module.name.text, "monkey");
+        assert_eq!(module.end_name.text, "monkey2");
         assert_eq!(module.import_list.len(), 0);
         assert_eq!(module.stmts.len(), 0);
-        assert_eq!(module.declaration_sequence.len(), 0);
+        assert_eq!(module.declarations.len(), 0);
     }
 
     #[test]
@@ -638,12 +620,12 @@ mod tests {
         assert_eq!(module.import_list.len(), 2);
 
         let first_import = module.import_list[0].clone();
-        assert_eq!(first_import.first_ident.identifier, "foo");
-        assert_eq!(first_import.second_ident, None);
+        assert_eq!(first_import.module.text, "foo");
+        assert_eq!(first_import.alias, None);
 
         let second_import = module.import_list[1].clone();
-        assert_eq!(second_import.first_ident.identifier, "bar");
-        assert_eq!(second_import.second_ident.unwrap().identifier, "baz");
+        assert_eq!(second_import.module.text, "baz");
+        assert_eq!(second_import.alias.unwrap().text, "bar");
     }
 
     #[test]
@@ -656,7 +638,7 @@ mod tests {
         let tokens = module_tokens("monkey", "monkey", body);
         let module = parse_module(tokens);
 
-        assert_eq!(module.declaration_sequence.len(), 0);
+        assert_eq!(module.declarations.len(), 0);
     }
 
     #[test]
@@ -672,10 +654,10 @@ mod tests {
         let tokens = module_tokens("monkey", "monkey", body);
         let module = parse_module(tokens);
 
-        assert_eq!(module.declaration_sequence.len(), 1);
+        assert_eq!(module.declarations.len(), 1);
         assert!(matches!(
-            &module.declaration_sequence[0],
-            Declaration::Const { ident: IdentifierDef { identifier: Identifier { identifier, .. }, .. }, .. }
+            &module.declarations[0],
+            Declaration::Const { ident: IdentifierDef { ident: Identifier { text: identifier, .. }, .. }, .. }
                 if identifier == "Foo"
         ));
     }
@@ -698,18 +680,18 @@ mod tests {
         let tokens = module_tokens("monkey", "monkey", body);
         let module = parse_module(tokens);
 
-        assert_eq!(module.declaration_sequence.len(), 2);
+        assert_eq!(module.declarations.len(), 2);
 
         assert!(matches!(
-            &module.declaration_sequence[0],
-            Declaration::Const { ident: IdentifierDef { identifier: Identifier { identifier, .. }, star, .. }, .. }
-                if identifier == "Foo" && !*star
+            &module.declarations[0],
+            Declaration::Const { ident: IdentifierDef { ident: Identifier { text: identifier, .. }, exported, .. }, .. }
+                if identifier == "Foo" && !*exported
         ));
 
         assert!(matches!(
-            &module.declaration_sequence[1],
-            Declaration::Const { ident: IdentifierDef { identifier: Identifier { identifier, .. }, star, .. }, .. }
-                if identifier == "Bar" && *star
+            &module.declarations[1],
+            Declaration::Const { ident: IdentifierDef { ident: Identifier { text: identifier, .. }, exported, .. }, .. }
+                if identifier == "Bar" && *exported
         ));
     }
 
@@ -723,7 +705,7 @@ mod tests {
         let tokens = module_tokens("monkey", "monkey", body);
         let module = parse_module(tokens);
 
-        assert_eq!(module.declaration_sequence.len(), 0);
+        assert_eq!(module.declarations.len(), 0);
     }
 
     #[test]
@@ -741,18 +723,16 @@ mod tests {
         let tokens = module_tokens("monkey", "monkey", body);
         let module = parse_module(tokens);
 
-        assert_eq!(module.declaration_sequence.len(), 1);
-        assert!(matches!(
-            &module.declaration_sequence[0],
-            Declaration::Type {
-                ident: IdentifierDef { .. },
-                ty: Type::Named {
-                    name: QualifiedIdentifier { first_ident: Some(Identifier { identifier, .. }), second_ident, .. },
-                    ..
-                },
-                ..
-            } if identifier == "M" && second_ident.identifier == "B"
-        ));
+        assert_eq!(module.declarations.len(), 1);
+        let decl = &module.declarations[0];
+
+        if let Declaration::Type { ty: Type::Named { name, .. }, .. } = decl {
+            assert_eq!(name.parts.len(), 2);
+            assert_eq!(name.parts[0].text, "M");
+            assert_eq!(name.parts[1].text, "B");
+        } else {
+            panic!("expected a named type declaration");
+        }
     }
 
     #[test]
@@ -773,28 +753,31 @@ mod tests {
         let tokens = module_tokens("monkey", "monkey", body);
         let module = parse_module(tokens);
 
-        assert_eq!(module.declaration_sequence.len(), 1);
-        assert!(module.declaration_sequence[0].is_type());
+        assert_eq!(module.declarations.len(), 1);
 
-        let (n, tpe) = module.declaration_sequence[0].as_type().unwrap();
-        assert_eq!(n.identifier.identifier, "Foo");
-        assert_eq!(n.star, false);
+        let Declaration::Type { ident, ty, .. } = &module.declarations[0] else {
+            panic!("expected Type declaration");
+        };
+        assert_eq!(ident.ident.text, "Foo");
+        assert_eq!(ident.exported, false);
 
-        assert!(tpe.is_array());
-        let (lengths, base) = tpe.as_array().unwrap();
+        let Type::Array { lengths, element, .. } = ty else {
+            panic!("expected Array type");
+        };
 
         assert_eq!(
             lengths,
-            vec![
+            &vec![
                 Int { value: 2, span: Span::new(29, 31) },
                 Int { value: 3, span: Span::new(32, 33) }
             ]
         );
 
-        assert!(base.is_named());
-        let named = base.as_named().unwrap();
-        assert_eq!(named.first_ident, None);
-        assert_eq!(named.second_ident.identifier, "T");
+        let Type::Named { name, .. } = element.as_ref() else {
+            panic!("expected named element type");
+        };
+        assert_eq!(name.parts.len(), 1);
+        assert_eq!(name.parts[0].text, "T");
     }
 
     #[test]
@@ -816,28 +799,31 @@ mod tests {
         let tokens = module_tokens("monkey", "monkey", body);
         let module = parse_module(tokens);
 
-        assert_eq!(module.declaration_sequence.len(), 1);
-        assert!(module.declaration_sequence[0].is_const());
+        assert_eq!(module.declarations.len(), 1);
 
-        let e = module.declaration_sequence[0].as_const().unwrap().1;
-        assert!(e.is_set());
+        let Declaration::Const { value, .. } = &module.declarations[0] else {
+            panic!("expected Const declaration");
+        };
 
-        let set = e.as_set().unwrap();
-        assert_eq!(set.len(), 2);
+        let Expression::Set { elements, .. } = value else {
+            panic!("expected Set expression");
+        };
+
+        assert_eq!(elements.len(), 2);
 
         assert_eq!(
-            *set[0].first_expression.deref(),
+            elements[0].first,
             Int { value: 1, span: Span::new(26, 27) }
         );
-        assert!(set[0].second_expression.is_none());
+        assert!(elements[0].second.is_none());
 
         assert_eq!(
-            *set[1].first_expression.deref(),
+            elements[1].first,
             Int { value: 2, span: Span::new(28, 29) }
         );
         assert_eq!(
-            *set[1].second_expression.clone().unwrap().deref(),
-            Int { value: 3, span: Span::new(31, 32) }
+            elements[1].second.as_ref().unwrap(),
+            &Int { value: 3, span: Span::new(31, 32) }
         );
     }
 
@@ -858,18 +844,25 @@ mod tests {
         let tokens = module_tokens("monkey", "monkey", body);
         let module = parse_module(tokens);
 
-        assert_eq!(module.declaration_sequence.len(), 1);
-        assert!(module.declaration_sequence[0].is_const());
+        assert_eq!(module.declarations.len(), 1);
 
-        let e = module.declaration_sequence[0].as_const().unwrap().1;
-        assert!(e.is_designator());
+        let Declaration::Const { value, .. } = &module.declarations[0] else {
+            panic!("expected Const declaration");
+        };
 
-        let (identifier, selector, parameters) = e.as_designator().unwrap();
-        assert_eq!(identifier.first_ident.as_ref().unwrap().identifier, "M".to_string());
-        assert_eq!(identifier.second_ident.identifier, "B".to_string());
-        assert!(selector.is_qualified());
-        assert_eq!(selector.as_qualified().unwrap().identifier, "Bar".to_string());
-        assert!(parameters.is_none())
+        let Expression::Designator(d) = value else {
+            panic!("expected Designator expression");
+        };
+
+        // head = M.B
+        assert_eq!(d.head.parts.len(), 2);
+        assert_eq!(d.head.parts[0].text, "M");
+        assert_eq!(d.head.parts[1].text, "B");
+
+        // selectors = [.Bar] (ingen call)
+        assert_eq!(d.selectors.len(), 1);
+        assert!(matches!(&d.selectors[0], Selector::Field(id) if id.text == "Bar"));
+
     }
 
     #[test]
@@ -894,23 +887,37 @@ mod tests {
         let tokens = module_tokens("monkey", "monkey", body);
         let module = parse_module(tokens);
 
-        assert_eq!(module.declaration_sequence.len(), 1);
-        assert!(module.declaration_sequence[0].is_const());
+        assert_eq!(module.declarations.len(), 1);
 
-        let e = module.declaration_sequence[0].as_const().unwrap().1;
-        assert!(e.is_designator());
+        let Declaration::Const { value, .. } = &module.declarations[0] else {
+            panic!("expected Const declaration");
+        };
 
-        let (identifier, selector, parameters) = e.as_designator().unwrap();
-        assert_eq!(identifier.first_ident.as_ref().unwrap().identifier, "M".to_string());
-        assert_eq!(identifier.second_ident.identifier, "B".to_string());
-        assert!(selector.is_qualified());
-        assert_eq!(selector.as_qualified().unwrap().identifier, "Bar".to_string());
+        let Expression::Designator(d) = value else {
+            panic!("expected Designator expression");
+        };
 
-        assert!(parameters.is_some());
-        let v = parameters.as_ref().unwrap();
-        assert_eq!(v.parameters.len(), 2);
-        assert_eq!(v.parameters[0], Int { value: 1, span: Span { start: 35, end: 36 } });
-        assert_eq!(v.parameters[1], Int { value: 2, span: Span { start: 37, end: 38 } });
+        // head = M.B
+        assert_eq!(d.head.parts.len(), 2);
+        assert_eq!(d.head.parts[0].text, "M");
+        assert_eq!(d.head.parts[1].text, "B");
+
+        // selectors = [.Bar, (1,2)]
+        assert_eq!(d.selectors.len(), 2);
+
+        // 1) .Bar
+        assert!(matches!(&d.selectors[0], Selector::Field(id) if id.text == "Bar"));
+
+        // 2) (1,2)
+        match &d.selectors[1] {
+            Selector::Call(args, call_span) => {
+                assert_eq!(*call_span, Span::new(34, 39)); // hvis du vil tjekke call-span også
+                assert_eq!(args.len(), 2);
+                assert_eq!(args[0], Int { value: 1, span: Span { start: 35, end: 36 } });
+                assert_eq!(args[1], Int { value: 2, span: Span { start: 37, end: 38 } });
+            }
+            other => panic!("expected Call selector, got {other:?}"),
+        }
     }
 
     #[test]
@@ -928,18 +935,24 @@ mod tests {
         let tokens = module_tokens("monkey", "monkey", body);
         let module = parse_module(tokens);
 
-        assert_eq!(module.declaration_sequence.len(), 1);
-        assert!(module.declaration_sequence[0].is_const());
+        assert_eq!(module.declarations.len(), 1);
 
-        let e = module.declaration_sequence[0].as_const().unwrap().1;
-        assert!(e.is_designator());
+        let Declaration::Const { value, .. } = &module.declarations[0] else {
+            panic!("expected Const declaration");
+        };
 
-        let (identifier, selector, parameters) = e.as_designator().unwrap();
-        assert_eq!(identifier.first_ident, None);
-        assert_eq!(identifier.second_ident.identifier, "B".to_string());
-        assert!(selector.is_qualified());
-        assert_eq!(selector.as_qualified().unwrap().identifier, "Bar".to_string());
-        assert!(parameters.is_none())
+        let Expression::Designator(d) = value else {
+            panic!("expected Designator expression");
+        };
+
+        // head = B
+        assert_eq!(d.head.parts.len(), 1);
+        assert_eq!(d.head.parts[0].text, "B");
+
+        // selectors = [.Bar] (ingen call)
+        assert_eq!(d.selectors.len(), 1);
+        assert!(matches!(&d.selectors[0], Selector::Field(id) if id.text == "Bar"));
+
     }
 
     #[test]
@@ -960,21 +973,36 @@ mod tests {
         let tokens = module_tokens("monkey", "monkey", body);
         let module = parse_module(tokens);
 
-        assert_eq!(module.declaration_sequence.len(), 1);
-        assert!(module.declaration_sequence[0].is_const());
+        assert_eq!(module.declarations.len(), 1);
 
-        let e = module.declaration_sequence[0].as_const().unwrap().1;
-        assert!(e.is_designator());
+        let Declaration::Const { value, .. } = &module.declarations[0] else {
+            panic!("expected Const declaration");
+        };
 
-        let (identifier, selector, parameters) = e.as_designator().unwrap();
-        assert_eq!(identifier.first_ident, None);
-        assert_eq!(identifier.second_ident.identifier, "B".to_string());
-        assert!(selector.is_qualified());
-        assert_eq!(selector.as_qualified().unwrap().identifier, "Bar".to_string());
+        let Expression::Designator(d) = value else {
+            panic!("expected Designator expression");
+        };
 
-        assert!(parameters.is_some());
-        let v = parameters.as_ref().unwrap();
-        assert_eq!(v.parameters.len(), 1);
-        assert_eq!(v.parameters[0], Int { value: 10, span: Span { start: 30, end: 31 } });
+        // head = B
+        assert_eq!(d.head.parts.len(), 1);
+        assert_eq!(d.head.parts[0].text, "B");
+
+        // selectors = [.Bar, (10)]
+        assert_eq!(d.selectors.len(), 2);
+
+        // 1) .Bar
+        assert!(matches!(&d.selectors[0], Selector::Field(id) if id.text == "Bar"));
+
+        // 2) (10)
+        match &d.selectors[1] {
+            Selector::Call(args, call_span) => {
+                // optional: tjek span for selve call'et
+                assert_eq!(*call_span, Span::new(29, 32));
+
+                assert_eq!(args.len(), 1);
+                assert_eq!(args[0], Int { value: 10, span: Span { start: 30, end: 31 } });
+            }
+            other => panic!("expected Call selector, got {other:?}"),
+        }
     }
 }
