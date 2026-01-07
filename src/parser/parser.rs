@@ -1,11 +1,11 @@
-use crate::ast::{BinaryOperation, Spanned, UnaryOperation};
+use crate::ast::{BinaryOperation, FieldList, Spanned, UnaryOperation};
 use crate::ast::{
     Declaration, Element, Expression, Identifier, IdentifierDef, Import, Module,
     QualifiedIdentifier, Type,
 };
 use crate::lexer::{Token, TokenKind};
 use crate::span::Span;
-use thiserror::{Error};
+use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ParserError {
@@ -179,6 +179,12 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_identifier_def(&mut self) -> Result<IdentifierDef, ParserError> {
+        let name = self.expect_ident()?;
+        let star_tok = self.maybe_star()?;
+        Ok(Self::create_identifier_def(name, star_tok))
+    }
+
     fn parse_named_decls<T>(
         &mut self,
         header: TokenKind,
@@ -315,19 +321,8 @@ impl<'a> Parser<'a> {
         match peek.kind {
             TokenKind::Ident(_) => {
                 // Named type: Ident | Ident '.' Ident
-                let first = self.expect_ident()?;
 
-                let name = if self.at(&TokenKind::Dot) {
-                    self.bump()?; // '.'
-                    let second = self.expect_ident()?;
-                    QualifiedIdentifier::new(vec![first, second])
-                } else {
-                    QualifiedIdentifier::new(vec![first])
-                };
-
-                let span = name.span();
-
-                Ok(Type::Named { name, span })
+                Ok(self.parse_named_type()?)
             }
 
             TokenKind::Array => {
@@ -351,8 +346,71 @@ impl<'a> Parser<'a> {
                 })
             }
 
+            TokenKind::Record => {
+                let start = self.expect(TokenKind::Record)?.span.start;
+                let base =
+                    if self.at(&TokenKind::LParen) {
+                        self.bump()?;
+                        let base = self.parse_named_type()?;
+                        self.expect(TokenKind::RParen)?;
+                        Some( Box::new(base))
+                    } else {
+                        None
+                    };
+                let mut field_lists = vec![self.parse_field_list()?];
+                while self.at(&TokenKind::SemiColon) {
+                    self.bump()?;
+                    field_lists.push(self.parse_field_list()?);
+                };
+                let end = self.expect(TokenKind::End)?.span.end;
+
+                Ok(Type::Record {
+                    base,
+                    field_lists,
+                    span: Span { start, end },
+                })
+            }
+
+            TokenKind::Pointer => {
+                let start = self.expect(TokenKind::Pointer)?.span.start;
+                self.expect(TokenKind::To)?;
+                let pointee = self.parse_type()?;
+                let end = pointee.span().end;
+                Ok(Type::Pointer { pointee: Box::new(pointee), span: Span::new(start, end) })
+            }
+
             _ => Err(ParserError::UnexpectedToken { token: peek }),
         }
+    }
+
+    fn parse_field_list(&mut self) -> Result<FieldList, ParserError> {
+        let mut fields = vec![self.parse_identifier_def()?];
+        while self.at(&TokenKind::Comma) {
+            self.bump()?;
+            fields.push(self.parse_identifier_def()?);
+        };
+        self.expect(TokenKind::Colon)?;
+        let ty = self.parse_type()?;
+        Ok(FieldList{
+            fields,
+            ty
+        })
+    }
+
+    fn parse_named_type(&mut self) -> Result<Type, ParserError> {
+        let first = self.expect_ident()?;
+
+        let name = if self.at(&TokenKind::Dot) {
+            self.bump()?; // '.'
+            let second = self.expect_ident()?;
+            QualifiedIdentifier::new(vec![first, second])
+        } else {
+            QualifiedIdentifier::new(vec![first])
+        };
+
+        let span = name.span();
+
+        Ok(Type::Named { name, span })
     }
 
     // -------------------------
@@ -694,11 +752,11 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Deref;
     use super::Parser;
     use crate::ast::{BinaryOperation, Declaration, Expression, Identifier, IdentifierDef, Selector, Type, UnaryOperation};
     use crate::lexer::{Token, TokenKind};
     use crate::span::Span;
+    use std::ops::Deref;
     use Expression::Int;
 
     // -------------------------
@@ -724,6 +782,9 @@ mod tests {
     (Type   $a:expr, $b:expr) => { t(TokenKind::Type,   $a, $b) };
     (Array  $a:expr, $b:expr) => { t(TokenKind::Array,  $a, $b) };
     (Of     $a:expr, $b:expr) => { t(TokenKind::Of,     $a, $b) };
+    (Record $a:expr, $b:expr) => { t(TokenKind::Record, $a, $b) };
+    (Pointer $a:expr, $b:expr) => { t(TokenKind::Pointer, $a, $b) };
+    (To $a:expr, $b:expr) => { t(TokenKind::To, $a, $b) };
 
     (Ident $s:literal, $a:expr, $b:expr) => { ident($s, $a, $b) };
     (Int   $v:expr,    $a:expr, $b:expr) => { int($v, $a, $b) };
@@ -735,6 +796,7 @@ mod tests {
     (Star   $a:expr, $b:expr) => { t(TokenKind::Star,     $a, $b) };
     (Dot    $a:expr, $b:expr) => { t(TokenKind::Dot,      $a, $b) };
     (DotDot $a:expr, $b:expr) => { t(TokenKind::DotDot,   $a, $b) };
+    (Colon  $a:expr, $b:expr) => { t(TokenKind::Colon,    $a, $b) };
 
     (LParen $a:expr, $b:expr) => { t(TokenKind::LParen,   $a, $b) };
     (RParen $a:expr, $b:expr) => { t(TokenKind::RParen,   $a, $b) };
@@ -974,6 +1036,108 @@ mod tests {
         assert_eq!(name.parts[0].text, "T");
     }
 
+    #[test]
+    fn parse_record_type() {
+        let body = vec![
+            tok!(Type 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Record 24, 31),
+            tok!(LParen 31, 32),
+            tok!(Ident "A", 32, 33),
+            tok!(RParen 33, 34),
+            tok!(Ident "b", 35, 36),
+            tok!(Comma 36, 37),
+            tok!(Ident "c", 37, 38),
+            tok!(Star 38, 39),
+            tok!(Colon 39, 40),
+            tok!(Ident "T", 41, 44),
+            tok!(Semi 44, 45),
+            tok!(Ident "d", 46, 47),
+            tok!(Colon 47, 48),
+            tok!(Ident "U", 49, 51),
+            tok!(End 51, 54),
+            tok!(Semi 54, 55),
+        ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
+        assert_eq!(module.declarations.len(), 1);
+        let Declaration::Type { ident, ty, .. } = &module.declarations[0] else {
+            panic!("expected Type declaration");
+        };
+        assert_eq!(ident.ident.text, "Foo");
+        assert_eq!(ident.exported, false);
+
+        let Type::Record { base, field_lists, .. } = ty else {
+            panic!("expected Array type");
+        };
+        assert!(base.is_some());
+        let base_type = base.as_ref().unwrap();
+
+        let Type::Named { name , .. } = base_type.deref() else {
+            panic!("expected Named type");
+        };
+        assert_eq!(name.parts.len(), 1);
+        assert_eq!(name.parts[0].text, "A");
+
+        assert_eq!(field_lists.len(), 2);
+        let field_list_1 = field_lists[0].clone();
+        assert_eq!(field_list_1.fields.len(), 2);
+        assert_eq!(field_list_1.fields[0].ident.text, "b");
+        assert_eq!(field_list_1.fields[0].exported, false);
+        assert_eq!(field_list_1.fields[1].ident.text, "c");
+        assert_eq!(field_list_1.fields[1].exported, true);
+        let Type::Named { name, .. } = field_list_1.ty else {
+            panic!("expected named element type");
+        };
+        assert_eq!(name.parts.len(), 1);
+        assert_eq!(name.parts[0].text, "T");
+
+        let field_list_2 = field_lists[1].clone();
+        assert_eq!(field_list_2.fields.len(), 1);
+        assert_eq!(field_list_2.fields[0].ident.text, "d");
+        assert_eq!(field_list_2.fields[0].exported, false);
+        let Type::Named { name, .. } = field_list_2.ty else {
+            panic!("expected named element type");
+        };
+        assert_eq!(name.parts.len(), 1);
+        assert_eq!(name.parts[0].text, "U");
+    }
+
+    #[test]
+    fn parse_pointer_type() {
+        let body = vec![
+            tok!(Type 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Pointer 24, 31),
+            tok!(To 31, 32),
+            tok!(Ident "A", 32, 33),
+            tok!(Semi 54, 55),
+        ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
+        assert_eq!(module.declarations.len(), 1);
+        let Declaration::Type { ident, ty, .. } = &module.declarations[0] else {
+            panic!("expected Type declaration");
+        };
+        assert_eq!(ident.ident.text, "Foo");
+        assert_eq!(ident.exported, false);
+
+        let Type::Pointer { pointee, .. } = ty else {
+            panic!("expected Array type");
+        };
+
+        let Type::Named { name , .. } = pointee.deref() else {
+            panic!("expected Named type");
+        };
+        assert_eq!(name.parts.len(), 1);
+        assert_eq!(name.parts[0].text, "A");
+    }
     #[test]
     fn parse_set_const() {
         let body = vec![
@@ -1507,7 +1671,7 @@ mod tests {
 #[cfg(test)]
 mod expr_tests {
     use super::Parser;
-    use crate::ast::{Declaration, Designator, Expression, Selector, BinaryOperation};
+    use crate::ast::{BinaryOperation, Declaration, Designator, Expression, Selector};
     use crate::lexer::{Token, TokenKind};
     use crate::span::Span;
 

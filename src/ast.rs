@@ -117,18 +117,21 @@ impl Spanned for Declaration {
 pub struct FieldList {
     pub fields: Vec<IdentifierDef>,
     pub ty: Type,
-    pub span: Span,
 }
 
 impl Spanned for FieldList {
-    fn span(&self) -> Span { self.span }
+    fn span(&self) -> Span {
+        let start = self.fields.first().unwrap().span.start;
+        let end = self.ty.span().end;
+        Span::new(start, end)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Type {
     Named   { name: QualifiedIdentifier, span: Span },
     Array   { lengths: Vec<Expression>, element: Box<Type>, span: Span },
-    Record  { base: Option<QualifiedIdentifier>, field_lists: Vec<FieldList>, span: Span },
+    Record  { base: Option<Box<Type>>, field_lists: Vec<FieldList>, span: Span },
     Pointer { pointee: Box<Type>, span: Span },
 }
 
