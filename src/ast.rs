@@ -253,6 +253,7 @@ pub enum Expression {
 
     Designator(Designator),
 
+    Unary { op: UnaryOperation, operand: Box<Expression>, span: Span },
     Binary { op: BinaryOperation, lhs: Box<Expression>, rhs: Box<Expression>, span: Span },
 }
 
@@ -267,8 +268,14 @@ impl Spanned for Expression {
             Expression::Set { span, .. } => *span,
             Expression::Designator(d) => d.span(),
             Expression::Binary { span, .. } => *span,
+            Expression::Unary { span, .. } => *span,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum UnaryOperation {
+    Not,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

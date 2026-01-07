@@ -1,9 +1,8 @@
-use crate::ast::Spanned;
+use crate::ast::{Spanned, UnaryOperation};
 use crate::ast::{
     Declaration, Element, Expression, Identifier, IdentifierDef, Import, Module,
     QualifiedIdentifier, Type,
 };
-use crate::lexer::TokenKind::{Array, Ident};
 use crate::lexer::{Token, TokenKind};
 use crate::span::Span;
 use thiserror::{Error};
@@ -314,7 +313,7 @@ impl<'a> Parser<'a> {
         let peek = self.peek()?.clone();
 
         match peek.kind {
-            Ident(_) => {
+            TokenKind::Ident(_) => {
                 // Named type: Ident | Ident '.' Ident
                 let first = self.expect_ident()?;
 
@@ -331,7 +330,7 @@ impl<'a> Parser<'a> {
                 Ok(Type::Named { name, span })
             }
 
-            Array => {
+            TokenKind::Array => {
                 let start = self.expect(TokenKind::Array)?.span.start;
 
                 // ARRAY len {, len} OF type
@@ -392,6 +391,22 @@ impl<'a> Parser<'a> {
                 self.parse_designator_or_error(first)
             }
 
+            TokenKind::LParen => {
+                self.bump()?;
+                let expr = self.parse_expression()?;
+                self.expect(TokenKind::RParen)?;
+                Ok(expr)
+            }
+
+            TokenKind::Tilde => {
+                let tilde = self.bump()?;
+                let operand = self.parse_expression()?;
+                Ok(Expression::Unary {
+                    op: UnaryOperation::Not,
+                    operand: Box::new(operand.clone()),
+                    span: Span { start: tilde.span.start, end: operand.span().end },
+                })
+            }
             _ => Err(ParserError::UnexpectedToken { token: peek }),
         }
     }
@@ -584,8 +599,9 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Deref;
     use super::Parser;
-    use crate::ast::{Declaration, Expression, Identifier, IdentifierDef, Selector, Type};
+    use crate::ast::{Declaration, Expression, Identifier, IdentifierDef, Selector, Type, UnaryOperation};
     use crate::lexer::{Token, TokenKind};
     use crate::span::Span;
     use Expression::Int;
@@ -945,7 +961,6 @@ mod tests {
         // selectors = [.Bar] (ingen call)
         assert_eq!(d.selectors.len(), 1);
         assert!(matches!(&d.selectors[0], Selector::Field(id) if id.text == "Bar"));
-
     }
 
     #[test]
@@ -1095,7 +1110,6 @@ mod tests {
             Token::new(TokenKind::Module, Span::new(0, 6)),
             Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
             Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-
             Token::new(TokenKind::Const, Span::new(14, 19)),
             Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
             Token::new(TokenKind::Equal, Span::new(23, 24)),
@@ -1105,7 +1119,6 @@ mod tests {
             Token::new(TokenKind::LParen, Span::new(26, 27)),
             Token::new(TokenKind::Ident("T".to_string()), Span::new(27, 28)),
             Token::new(TokenKind::RParen, Span::new(28, 29)),
-
             Token::new(TokenKind::SemiColon, Span::new(29, 30)),
             Token::new(TokenKind::End, Span::new(30, 33)),
             Token::new(TokenKind::Ident("monkey".to_string()), Span::new(34, 40)),
@@ -1148,7 +1161,6 @@ mod tests {
             Token::new(TokenKind::Module, Span::new(0, 6)),
             Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
             Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-
             Token::new(TokenKind::Const, Span::new(14, 19)),
             Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
             Token::new(TokenKind::Equal, Span::new(23, 24)),
@@ -1160,7 +1172,6 @@ mod tests {
             Token::new(TokenKind::Dot, Span::new(28, 29)),
             Token::new(TokenKind::Ident("T".to_string()), Span::new(29, 30)),
             Token::new(TokenKind::RParen, Span::new(30, 31)),
-
             Token::new(TokenKind::SemiColon, Span::new(31, 32)),
             Token::new(TokenKind::End, Span::new(32, 35)),
             Token::new(TokenKind::Ident("monkey".to_string()), Span::new(36, 42)),
@@ -1198,7 +1209,6 @@ mod tests {
             Token::new(TokenKind::Module, Span::new(0, 6)),
             Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
             Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-
             Token::new(TokenKind::Const, Span::new(14, 19)),
             Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
             Token::new(TokenKind::Equal, Span::new(23, 24)),
@@ -1208,7 +1218,6 @@ mod tests {
             Token::new(TokenKind::LParen, Span::new(26, 27)),
             Token::new(TokenKind::Int(1), Span::new(27, 28)),
             Token::new(TokenKind::RParen, Span::new(28, 29)),
-
             Token::new(TokenKind::SemiColon, Span::new(29, 30)),
             Token::new(TokenKind::End, Span::new(30, 33)),
             Token::new(TokenKind::Ident("monkey".to_string()), Span::new(34, 40)),
@@ -1243,22 +1252,18 @@ mod tests {
             Token::new(TokenKind::Module, Span::new(0, 6)),
             Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
             Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-
             Token::new(TokenKind::Const, Span::new(14, 19)),
             Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
             Token::new(TokenKind::Equal, Span::new(23, 24)),
 
             // x(T)(1)
             Token::new(TokenKind::Ident("x".to_string()), Span::new(25, 26)),
-
             Token::new(TokenKind::LParen, Span::new(26, 27)),
             Token::new(TokenKind::Ident("T".to_string()), Span::new(27, 28)),
             Token::new(TokenKind::RParen, Span::new(28, 29)),
-
             Token::new(TokenKind::LParen, Span::new(29, 30)),
             Token::new(TokenKind::Int(1), Span::new(30, 31)),
             Token::new(TokenKind::RParen, Span::new(31, 32)),
-
             Token::new(TokenKind::SemiColon, Span::new(32, 33)),
             Token::new(TokenKind::End, Span::new(33, 36)),
             Token::new(TokenKind::Ident("monkey".to_string()), Span::new(37, 43)),
@@ -1306,27 +1311,21 @@ mod tests {
             Token::new(TokenKind::Module, Span::new(0, 6)),
             Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
             Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-
             Token::new(TokenKind::Const, Span::new(14, 19)),
             Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
             Token::new(TokenKind::Equal, Span::new(23, 24)),
 
             // x^.y
             Token::new(TokenKind::Ident("x".to_string()), Span::new(25, 26)),
-
             Token::new(TokenKind::LSquare, Span::new(26, 27)),
             Token::new(TokenKind::Int(1), Span::new(27, 28)),
             Token::new(TokenKind::RSquare, Span::new(28, 29)),
-
             Token::new(TokenKind::LParen, Span::new(29, 30)),
             Token::new(TokenKind::Int(2), Span::new(30, 31)),
             Token::new(TokenKind::RParen, Span::new(31, 32)),
-
             Token::new(TokenKind::Caret, Span::new(32, 33)),
-
             Token::new(TokenKind::Dot, Span::new(33, 34)),
             Token::new(TokenKind::Ident("y".to_string()), Span::new(34, 35)),
-
             Token::new(TokenKind::SemiColon, Span::new(35, 36)),
             Token::new(TokenKind::End, Span::new(36, 39)),
             Token::new(TokenKind::Ident("monkey".to_string()), Span::new(40, 46)),
@@ -1385,4 +1384,75 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parse_tilde_expression() {
+        let tokens = vec![
+            Token::new(TokenKind::Module, Span::new(0, 6)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
+            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
+            Token::new(TokenKind::Const, Span::new(14, 19)),
+            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
+            Token::new(TokenKind::Equal, Span::new(23, 24)),
+
+            // ~TRUE
+            Token::new(TokenKind::Tilde, Span::new(25, 26)),
+            Token::new(TokenKind::True, Span::new(26, 29)),
+
+            Token::new(TokenKind::SemiColon, Span::new(29, 30)),
+            Token::new(TokenKind::End, Span::new(30, 33)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(34, 40)),
+            Token::new(TokenKind::Dot, Span::new(40, 41)),
+            Token::new(TokenKind::Eof, Span::new(41, 41))
+        ];
+
+        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
+        let module = parser.parse().unwrap();
+
+        let Declaration::Const { value, .. } = &module.declarations[0] else {
+            panic!("expected Const declaration");
+        };
+        let Expression::Unary { op, operand, ..} = value else {
+            panic!("expected Unary expression");
+        };
+
+        assert_eq!(*op, UnaryOperation::Not);
+        let Expression::Bool { value, .. } = (*operand).deref() else {
+            panic!("expected Bool literal");
+        };
+        assert_eq!(*value, true)
+    }
+
+    #[test]
+    fn parse_parenthesis_expression() {
+        let tokens = vec![
+            Token::new(TokenKind::Module, Span::new(0, 6)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
+            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
+            Token::new(TokenKind::Const, Span::new(14, 19)),
+            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
+            Token::new(TokenKind::Equal, Span::new(23, 24)),
+
+            // (TRUE)
+            Token::new(TokenKind::LParen, Span::new(25, 26)),
+            Token::new(TokenKind::True, Span::new(26, 29)),
+            Token::new(TokenKind::RParen, Span::new(29, 30)),
+
+            Token::new(TokenKind::SemiColon, Span::new(30, 31)),
+            Token::new(TokenKind::End, Span::new(31, 34)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(35, 41)),
+            Token::new(TokenKind::Dot, Span::new(41, 42)),
+            Token::new(TokenKind::Eof, Span::new(42, 42))
+        ];
+
+        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
+        let module = parser.parse().unwrap();
+
+        let Declaration::Const { value, .. } = &module.declarations[0] else {
+            panic!("expected Const declaration");
+        };
+        let Expression::Bool { value, .. } = value else {
+            panic!("expected Bool literal");
+        };
+        assert_eq!(*value, true)
+    }
 }
