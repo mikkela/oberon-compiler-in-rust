@@ -70,7 +70,7 @@ pub enum TokenKind {
     Tilde,
     Ampersand,
     Pipe,
-    VersatileMark,
+    Caret,
     Eof,
 }
 

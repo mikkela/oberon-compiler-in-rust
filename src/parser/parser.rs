@@ -408,67 +408,150 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Din gamle kode håndterede kun:
-    ///   Ident '.' Ident [ '.' Ident ] [ActualParameters]
-    /// og havde todo!() for "bare Ident".
-    ///
-    /// Her returnerer vi en pæn fejl, hvis det ikke er et designator-mønster.
     fn parse_designator_or_error(&mut self, first: Identifier) -> Result<Expression, ParserError> {
-        // kræv at det er et designator-mønster (din gamle todo!)
-        if !self.at(&TokenKind::Dot) {
-            let tok = self.peek()?.clone();
-            return Err(ParserError::UnexpectedToken { token: tok });
+        // parse head: either [first] or [first, second] if "first.second"
+        let mut parts = vec![first];
+
+        if self.at(&TokenKind::Dot) {
+            self.bump()?; // '.'
+            parts.push(self.expect_ident()?);
         }
 
-        self.bump()?; // '.'
-        let second = self.expect_ident()?;
+        let head = crate::ast::QualifiedIdentifier::new(parts);
 
-        // 3-part: M.B.Bar(args?)
-        if self.eat(TokenKind::Dot)?.is_some() {
-            let third = self.expect_ident()?; // field name
-            let mut selectors = vec![crate::ast::Selector::Field(third.clone())];
+        // parse selectors: (.field | [index] | ^ | (call))* in any order
+        let mut selectors: Vec<crate::ast::Selector> = vec![];
 
-            // optional call
-            if let Some((args, call_span)) = self.parse_call_args()? {
-                selectors.push(crate::ast::Selector::Call(args, call_span));
+        loop {
+            if self.at(&TokenKind::Dot) {
+                self.bump()?; // '.'
+                let field = self.expect_ident()?;
+                selectors.push(crate::ast::Selector::Field(field));
+                continue;
             }
 
-            let head = crate::ast::QualifiedIdentifier::new(vec![first, second]);
-            let end = selectors
-                .last()
-                .map(|s| s.span().end)
-                .unwrap_or(third.span.end);
+            if let Some(index_sel) = self.parse_index_selector()? {
+                selectors.push(index_sel);
+                continue;
+            }
 
-            let span = Span::new(head.span().start, end);
+            if let Some(sel) = self.parse_deref_selector()? {
+                selectors.push(sel);
+                continue;
+            }
 
-            Ok(crate::ast::Expression::Designator(crate::ast::Designator {
-                head,
-                selectors,
-                span,
-            }))
-        } else {
-            // 2-part: B.Bar(args?)
-            let field = second;
-            let mut selectors = vec![crate::ast::Selector::Field(field.clone())];
+            if let Some(sel) = self.parse_type_guard_selector()? {
+                selectors.push(sel);
+                continue;
+            }
 
             if let Some((args, call_span)) = self.parse_call_args()? {
                 selectors.push(crate::ast::Selector::Call(args, call_span));
+                continue;
             }
 
-            let head = crate::ast::QualifiedIdentifier::new(vec![first]);
-            let end = selectors
-                .last()
-                .map(|s| s.span().end)
-                .unwrap_or(field.span.end);
-
-            let span = Span::new(head.span().start, end);
-
-            Ok(crate::ast::Expression::Designator(crate::ast::Designator {
-                head,
-                selectors,
-                span,
-            }))
+            break;
         }
+
+        // Hvis der hverken var ".field", "[...]" eller "(...)" osv, er det stadig et designator: bare qualident
+        // (men du kan vælge at fejle hvis du *kun* kalder denne funktion i situationer hvor du forventer selector)
+        let end = selectors
+            .last()
+            .map(|s| s.span().end) // kræver `use crate::ast::Spanned;`
+            .unwrap_or(head.span().end);
+
+        let span = Span::new(head.span().start, end);
+
+        Ok(crate::ast::Expression::Designator(crate::ast::Designator {
+            head,
+            selectors,
+            span,
+        }))
+    }
+
+    fn parse_index_selector(&mut self) -> Result<Option<crate::ast::Selector>, ParserError> {
+        if !self.at(&TokenKind::LSquare) {
+            return Ok(None);
+        }
+
+        self.bump()?; // '['
+
+        // (Oberon) index kan være flere udtryk adskilt af comma: a[i, j]
+        let mut exprs = vec![];
+        if !self.at(&TokenKind::RSquare) {
+            exprs.push(self.parse_expression()?);
+            while self.eat(TokenKind::Comma)?.is_some() {
+                exprs.push(self.parse_expression()?);
+            }
+        }
+
+        self.expect(TokenKind::RSquare)?;
+        // Hvis du vil have span på Index, er det bedst at gemme span i Selector::Index.
+        // I min AST-variant var Index(Vec<Expression>) uden span; det fungerer, men span bliver “best effort”.
+        // Her er den enkle version:
+        Ok(Some(crate::ast::Selector::Index(exprs)))
+    }
+
+    fn parse_type_guard_selector(&mut self) -> Result<Option<crate::ast::Selector>, ParserError> {
+        if !self.at(&TokenKind::LParen) {
+            return Ok(None);
+        }
+
+        // Lookahead: ( Ident ( . Ident )? )
+        // Vi må ikke "forbruge" tokens hvis det ikke matcher.
+        // Den nemme løsning: kig på tokens med pos-indekser.
+
+        let Some(t0) = self.tokens.get(self.pos) else { return Ok(None) };       // '('
+        let Some(t1) = self.tokens.get(self.pos + 1) else { return Ok(None) };   // Ident?
+        if t0.kind != TokenKind::LParen {
+            return Ok(None);
+        }
+        let TokenKind::Ident(_) = &t1.kind else {
+            return Ok(None);
+        };
+
+        // Nu kan det være enten:
+        // ( Ident )
+        // ( Ident . Ident )
+        // Vi skal se om der findes ')' passende.
+        // Case A: ( Ident )
+        let is_close_after_one =
+            matches!(self.tokens.get(self.pos + 2).map(|t| &t.kind), Some(TokenKind::RParen));
+
+        // Case B: ( Ident . Ident )
+        let is_two_part =
+            matches!(self.tokens.get(self.pos + 2).map(|t| &t.kind), Some(TokenKind::Dot))
+                && matches!(self.tokens.get(self.pos + 3).map(|t| &t.kind), Some(TokenKind::Ident(_)))
+                && matches!(self.tokens.get(self.pos + 4).map(|t| &t.kind), Some(TokenKind::RParen));
+
+        if !(is_close_after_one || is_two_part) {
+            return Ok(None);
+        }
+
+        // Det matcher => forbrug tokens rigtigt
+        let lpar = self.bump()?; // '('
+        let first = self.expect_ident()?;
+
+        let mut parts = vec![first];
+        if self.at(&TokenKind::Dot) {
+            self.bump()?;
+            parts.push(self.expect_ident()?);
+        }
+
+        let rpar = self.expect(TokenKind::RParen)?;
+        let qid = crate::ast::QualifiedIdentifier::new(parts);
+        let span = Span::new(lpar.span.start, rpar.span.end);
+
+        Ok(Some(crate::ast::Selector::TypeGuard(qid, span)))
+    }
+
+    fn parse_deref_selector(&mut self) -> Result<Option<crate::ast::Selector>, ParserError> {
+        if !self.at(&TokenKind::Caret) {   // brug dit token-navn her
+            return Ok(None);
+        }
+
+        let tok = self.bump()?; // '^'
+        Ok(Some(crate::ast::Selector::Deref(tok.span)))
     }
 
     fn parse_element(&mut self) -> Result<Element, ParserError> {
@@ -946,17 +1029,17 @@ mod tests {
         };
 
         // head = B
-        assert_eq!(d.head.parts.len(), 1);
+        assert_eq!(d.head.parts.len(), 2);
         assert_eq!(d.head.parts[0].text, "B");
 
         // selectors = [.Bar] (ingen call)
-        assert_eq!(d.selectors.len(), 1);
-        assert!(matches!(&d.selectors[0], Selector::Field(id) if id.text == "Bar"));
+        assert_eq!(d.selectors.len(), 0);
+        //assert!(matches!(&d.selectors[0], Selector::Field(id) if id.text == "Bar"));
 
     }
 
     #[test]
-    fn parse_two_part_qualified_designator_with_aparameters_const() {
+    fn parse_two_part_qualified_designator_with_parameters_const() {
         let body = vec![
             tok!(Const 14, 19),
             tok!(Ident "Foo", 20, 23),
@@ -984,11 +1067,11 @@ mod tests {
         };
 
         // head = B
-        assert_eq!(d.head.parts.len(), 1);
+        assert_eq!(d.head.parts.len(), 2);
         assert_eq!(d.head.parts[0].text, "B");
 
         // selectors = [.Bar, (10)]
-        assert_eq!(d.selectors.len(), 2);
+        assert_eq!(d.selectors.len(), 1);
 
         // 1) .Bar
         assert!(matches!(&d.selectors[0], Selector::Field(id) if id.text == "Bar"));
@@ -1005,4 +1088,301 @@ mod tests {
             other => panic!("expected Call selector, got {other:?}"),
         }
     }
+
+    #[test]
+    fn parse_type_guard_selector_simple() {
+        let tokens = vec![
+            Token::new(TokenKind::Module, Span::new(0, 6)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
+            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
+
+            Token::new(TokenKind::Const, Span::new(14, 19)),
+            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
+            Token::new(TokenKind::Equal, Span::new(23, 24)),
+
+            // x(T)
+            Token::new(TokenKind::Ident("x".to_string()), Span::new(25, 26)),
+            Token::new(TokenKind::LParen, Span::new(26, 27)),
+            Token::new(TokenKind::Ident("T".to_string()), Span::new(27, 28)),
+            Token::new(TokenKind::RParen, Span::new(28, 29)),
+
+            Token::new(TokenKind::SemiColon, Span::new(29, 30)),
+            Token::new(TokenKind::End, Span::new(30, 33)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(34, 40)),
+            Token::new(TokenKind::Dot, Span::new(40, 41)),
+            Token::new(TokenKind::Eof, Span::new(41, 41)),
+        ];
+
+        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
+        let module = parser.parse().unwrap();
+
+        assert_eq!(module.declarations.len(), 1);
+
+        let Declaration::Const { value, .. } = &module.declarations[0] else {
+            panic!("expected Const declaration");
+        };
+
+        let Expression::Designator(d) = value else {
+            panic!("expected Designator expression");
+        };
+
+        // head = x
+        assert_eq!(d.head.parts.len(), 1);
+        assert_eq!(d.head.parts[0].text, "x");
+
+        // selectors = [(T)] as TypeGuard
+        assert_eq!(d.selectors.len(), 1);
+        match &d.selectors[0] {
+            Selector::TypeGuard(qid, span) => {
+                assert_eq!(*span, Span::new(26, 29)); // span covering "(T)"
+                assert_eq!(qid.parts.len(), 1);
+                assert_eq!(qid.parts[0].text, "T");
+            }
+            other => panic!("expected TypeGuard selector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_type_guard_selector_qualified() {
+        let tokens = vec![
+            Token::new(TokenKind::Module, Span::new(0, 6)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
+            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
+
+            Token::new(TokenKind::Const, Span::new(14, 19)),
+            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
+            Token::new(TokenKind::Equal, Span::new(23, 24)),
+
+            // x(M.T)
+            Token::new(TokenKind::Ident("x".to_string()), Span::new(25, 26)),
+            Token::new(TokenKind::LParen, Span::new(26, 27)),
+            Token::new(TokenKind::Ident("M".to_string()), Span::new(27, 28)),
+            Token::new(TokenKind::Dot, Span::new(28, 29)),
+            Token::new(TokenKind::Ident("T".to_string()), Span::new(29, 30)),
+            Token::new(TokenKind::RParen, Span::new(30, 31)),
+
+            Token::new(TokenKind::SemiColon, Span::new(31, 32)),
+            Token::new(TokenKind::End, Span::new(32, 35)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(36, 42)),
+            Token::new(TokenKind::Dot, Span::new(42, 43)),
+            Token::new(TokenKind::Eof, Span::new(43, 43)),
+        ];
+
+        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
+        let module = parser.parse().unwrap();
+
+        let Declaration::Const { value, .. } = &module.declarations[0] else {
+            panic!("expected Const declaration");
+        };
+        let Expression::Designator(d) = value else {
+            panic!("expected Designator expression");
+        };
+
+        assert_eq!(d.head.parts[0].text, "x");
+        assert_eq!(d.selectors.len(), 1);
+
+        match &d.selectors[0] {
+            Selector::TypeGuard(qid, span) => {
+                assert_eq!(*span, Span::new(26, 31)); // "(M.T)"
+                assert_eq!(qid.parts.len(), 2);
+                assert_eq!(qid.parts[0].text, "M");
+                assert_eq!(qid.parts[1].text, "T");
+            }
+            other => panic!("expected TypeGuard selector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_call_not_type_guard_disambiguation() {
+        let tokens = vec![
+            Token::new(TokenKind::Module, Span::new(0, 6)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
+            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
+
+            Token::new(TokenKind::Const, Span::new(14, 19)),
+            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
+            Token::new(TokenKind::Equal, Span::new(23, 24)),
+
+            // x(1)  -> MUST be Call, not TypeGuard
+            Token::new(TokenKind::Ident("x".to_string()), Span::new(25, 26)),
+            Token::new(TokenKind::LParen, Span::new(26, 27)),
+            Token::new(TokenKind::Int(1), Span::new(27, 28)),
+            Token::new(TokenKind::RParen, Span::new(28, 29)),
+
+            Token::new(TokenKind::SemiColon, Span::new(29, 30)),
+            Token::new(TokenKind::End, Span::new(30, 33)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(34, 40)),
+            Token::new(TokenKind::Dot, Span::new(40, 41)),
+            Token::new(TokenKind::Eof, Span::new(41, 41)),
+        ];
+
+        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
+        let module = parser.parse().unwrap();
+
+        let Declaration::Const { value, .. } = &module.declarations[0] else {
+            panic!("expected Const declaration");
+        };
+        let Expression::Designator(d) = value else {
+            panic!("expected Designator expression");
+        };
+
+        assert_eq!(d.selectors.len(), 1);
+        match &d.selectors[0] {
+            Selector::Call(args, span) => {
+                assert_eq!(*span, Span::new(26, 29));
+                assert_eq!(args.len(), 1);
+                assert_eq!(args[0], Expression::Int { value: 1, span: Span::new(27, 28) });
+            }
+            other => panic!("expected Call selector, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_type_guard_then_call_chain() {
+        let tokens = vec![
+            Token::new(TokenKind::Module, Span::new(0, 6)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
+            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
+
+            Token::new(TokenKind::Const, Span::new(14, 19)),
+            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
+            Token::new(TokenKind::Equal, Span::new(23, 24)),
+
+            // x(T)(1)
+            Token::new(TokenKind::Ident("x".to_string()), Span::new(25, 26)),
+
+            Token::new(TokenKind::LParen, Span::new(26, 27)),
+            Token::new(TokenKind::Ident("T".to_string()), Span::new(27, 28)),
+            Token::new(TokenKind::RParen, Span::new(28, 29)),
+
+            Token::new(TokenKind::LParen, Span::new(29, 30)),
+            Token::new(TokenKind::Int(1), Span::new(30, 31)),
+            Token::new(TokenKind::RParen, Span::new(31, 32)),
+
+            Token::new(TokenKind::SemiColon, Span::new(32, 33)),
+            Token::new(TokenKind::End, Span::new(33, 36)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(37, 43)),
+            Token::new(TokenKind::Dot, Span::new(43, 44)),
+            Token::new(TokenKind::Eof, Span::new(44, 44)),
+        ];
+
+        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
+        let module = parser.parse().unwrap();
+
+        let Declaration::Const { value, .. } = &module.declarations[0] else {
+            panic!("expected Const declaration");
+        };
+        let Expression::Designator(d) = value else {
+            panic!("expected Designator expression");
+        };
+
+        assert_eq!(d.head.parts.len(), 1);
+        assert_eq!(d.head.parts[0].text, "x");
+        assert_eq!(d.selectors.len(), 2);
+
+        // (T)
+        match &d.selectors[0] {
+            Selector::TypeGuard(qid, span) => {
+                assert_eq!(*span, Span::new(26, 29));
+                assert_eq!(qid.parts.len(), 1);
+                assert_eq!(qid.parts[0].text, "T");
+            }
+            other => panic!("expected TypeGuard selector, got {other:?}"),
+        }
+
+        // (1)
+        match &d.selectors[1] {
+            Selector::Call(args, span) => {
+                assert_eq!(*span, Span::new(29, 32));
+                assert_eq!(args.len(), 1);
+                assert_eq!(args[0], Expression::Int { value: 1, span: Span::new(30, 31) });
+            }
+            other => panic!("expected Call selector, got {other:?}"),
+        }
+    }
+    #[test]
+    fn parse_index_call_deref_field_chain() {
+        let tokens = vec![
+            Token::new(TokenKind::Module, Span::new(0, 6)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
+            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
+
+            Token::new(TokenKind::Const, Span::new(14, 19)),
+            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
+            Token::new(TokenKind::Equal, Span::new(23, 24)),
+
+            // x^.y
+            Token::new(TokenKind::Ident("x".to_string()), Span::new(25, 26)),
+
+            Token::new(TokenKind::LSquare, Span::new(26, 27)),
+            Token::new(TokenKind::Int(1), Span::new(27, 28)),
+            Token::new(TokenKind::RSquare, Span::new(28, 29)),
+
+            Token::new(TokenKind::LParen, Span::new(29, 30)),
+            Token::new(TokenKind::Int(2), Span::new(30, 31)),
+            Token::new(TokenKind::RParen, Span::new(31, 32)),
+
+            Token::new(TokenKind::Caret, Span::new(32, 33)),
+
+            Token::new(TokenKind::Dot, Span::new(33, 34)),
+            Token::new(TokenKind::Ident("y".to_string()), Span::new(34, 35)),
+
+            Token::new(TokenKind::SemiColon, Span::new(35, 36)),
+            Token::new(TokenKind::End, Span::new(36, 39)),
+            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(40, 46)),
+            Token::new(TokenKind::Dot, Span::new(46, 47)),
+            Token::new(TokenKind::Eof, Span::new(47, 47)),
+        ];
+
+        let mut parser = super::Parser { tokens: &tokens, pos: 0 };
+        let module = parser.parse().unwrap();
+
+        let Declaration::Const { value, .. } = &module.declarations[0] else {
+            panic!("expected Const declaration");
+        };
+        let Expression::Designator(d) = value else {
+            panic!("expected Designator expression");
+        };
+
+        assert_eq!(d.head.parts.len(), 1);
+        assert_eq!(d.head.parts[0].text, "x");
+        assert_eq!(d.selectors.len(), 4);
+
+        // [1]
+        match &d.selectors[0] {
+            Selector::Index(exprs) => {
+                assert_eq!(exprs.len(), 1);
+                assert_eq!(exprs[0], Expression::Int { value: 1, span: Span::new(27, 28) });
+            }
+            other => panic!("expected Index selector, got {other:?}"),
+        }
+
+        // (2)
+        match &d.selectors[1] {
+            Selector::Call(args, span) => {
+                assert_eq!(*span, Span::new(29, 32));
+                assert_eq!(args.len(), 1);
+                assert_eq!(args[0], Expression::Int { value: 2, span: Span::new(30, 31) });
+            }
+            other => panic!("expected Call selector, got {other:?}"),
+        }
+
+        // ^
+        match &d.selectors[2] {
+            Selector::Deref(span) => {
+                assert_eq!(*span, Span::new(32, 33));
+            }
+            other => panic!("expected Deref selector, got {other:?}"),
+        }
+
+        // .y
+        match &d.selectors[3] {
+            Selector::Field(id) => {
+                assert_eq!(id.text, "y");
+                assert_eq!(id.span, Span::new(34, 35));
+            }
+            other => panic!("expected Field selector, got {other:?}"),
+        }
+    }
+
 }

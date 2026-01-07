@@ -205,7 +205,8 @@ pub enum Selector {
     Field(Identifier),          // .x
     Index(Vec<Expression>),     // [e1, e2]
     Deref(Span),                // ^
-    Call(Vec<Expression>, Span) // (args)
+    Call(Vec<Expression>, Span), // (args)
+    TypeGuard(QualifiedIdentifier, Span), // (ident)
 }
 
 impl Spanned for Selector {
@@ -220,6 +221,7 @@ impl Spanned for Selector {
             }
             Selector::Deref(span) => *span,
             Selector::Call(_, span) => *span,
+            Selector::TypeGuard(_, span) => *span,
         }
     }
 }

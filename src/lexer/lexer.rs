@@ -329,7 +329,7 @@ impl<'a> Lexer<'a> {
                     Ok(Token::new(TokenKind::Assign, self.span(start, self.pos())))
                 } else { Ok(Token::new(TokenKind::Colon, self.span(start, self.pos()))) }
             }
-            '^' => Ok(Token::new(TokenKind::VersatileMark, self.span(start, self.pos()))),
+            '^' => Ok(Token::new(TokenKind::Caret, self.span(start, self.pos()))),
             '=' => Ok(Token::new(TokenKind::Equal, self.span(start, self.pos()))),
             '#' => Ok(Token::new(TokenKind::NotEqual, self.span(start, self.pos()))),
             '<' => {
