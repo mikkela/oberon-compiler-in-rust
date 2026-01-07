@@ -7,6 +7,7 @@ use crate::{
     lexer::{Token, TokenKind},
     span::{Span, SourceFile},
 };
+use crate::ast::Identifier;
 
 pub fn parse_module(src: &SourceFile, tokens: &[Token]) -> Result<Module> {
     // Dummy: forvent "MODULE <Ident> ; ... END <Ident> ."
@@ -32,9 +33,11 @@ pub fn parse_module(src: &SourceFile, tokens: &[Token]) -> Result<Module> {
     // Find END (meget naïvt)
     let end_span = tokens.last().map(|t| t.span).unwrap_or(Span::new(0, 0));
     Ok(Module {
-        name,
-        imports: vec![],
-        declarations: vec![],
+        first_ident: Identifier { identifier: name.clone(), span: Span { start: 0, end: 0 } },
+        second_ident: Identifier { identifier: name.clone(), span: Span { start: 0, end: 0 } },
+        import_list: vec![],
+        declaration_sequence: vec![],
         stmts: vec![],
+        span: Span { start: 0, end: end_span.end },
     })
 }
