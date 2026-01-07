@@ -275,10 +275,11 @@ impl Spanned for Expression {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum UnaryOperation {
-    Not,
+    Not, Plus, Minus
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BinaryOperation {
-    Add, Sub, Mul, Div,
+    Addition, Subtraction, Multiplication, Division, Mod, Div, And, Or,
+    Eq, Neq, Lt, Le, Gt, Ge, In, Is
 }
