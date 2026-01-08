@@ -196,6 +196,7 @@ pub enum Statement {
     Assign { target: Designator, value: Expression, span: Span },
     Call   { callee: Designator, span: Span },
     If     { cond: Expression, then_branch: Vec<Statement>, elsif_branches: Vec<ElsIf>, else_branch: Option<Vec<Statement>>, span: Span },
+    Case  { expr: Expression, branches: Vec<Case>, span: Span },
 }
 
 impl Spanned for Statement {
@@ -204,6 +205,7 @@ impl Spanned for Statement {
             Statement::Assign { span, .. } => *span,
             Statement::Call   { span, .. } => *span,
             Statement::If     { span, .. } => *span,
+            Statement::Case   { span, .. } => *span,
         }
     }
 }
@@ -219,6 +221,48 @@ impl Spanned for ElsIf {
     fn span(&self) -> Span { self.span }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Case {
+    pub label_list: Vec<Label>,
+    pub statements: Vec<Statement>,
+    pub span: Span,
+}
+
+impl Spanned for Case {
+    fn span(&self) -> Span { self.span }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Label {
+    Single{ value: LabelValue },
+    Range{ low: LabelValue, high: LabelValue},
+}
+
+impl Spanned for Label {
+    fn span(&self) -> Span {
+        match self {
+            Label::Single { value, .. } => value.span(),
+            Label::Range   { low, high, .. } => Span::new(low.span().start, high.span().end)
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum LabelValue {
+    Integer { value: i64, span: Span },
+    String { value: String, span: Span},
+    QualifiedIdentifier (QualifiedIdentifier),
+}
+
+impl Spanned for LabelValue {
+    fn span(&self) -> Span {
+        match self {
+            LabelValue::Integer { span, .. } => *span,
+            LabelValue::String   { span, .. } => *span,
+            LabelValue::QualifiedIdentifier ( ident, .. ) => ident.span()
+        }
+    }
+}
 // -------------------------
 // Designators & selectors
 // -------------------------

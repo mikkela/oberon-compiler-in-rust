@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOperation, Designator, ElsIf, FPSection, FieldList, FormalParameters, FormalType, Spanned, Statement, UnaryOperation};
+use crate::ast::{BinaryOperation, Case, Designator, ElsIf, FPSection, FieldList, FormalParameters, FormalType, Label, LabelValue, Spanned, Statement, UnaryOperation};
 use crate::ast::{
     Declaration, Element, Expression, Identifier, IdentifierDef, Import, Module,
     QualifiedIdentifier, Type,
@@ -507,7 +507,7 @@ impl<'a> Parser<'a> {
     // -------------------------
     fn parse_statements(&mut self) -> Result<Vec<Statement>, ParserError> {
         let result = self.list_until(
-            vec![TokenKind::End, TokenKind::Else, TokenKind::Elsif], TokenKind::SemiColon, |p| p.parse_statement())?;
+            vec![TokenKind::End, TokenKind::Else, TokenKind::Elsif, TokenKind::Pipe], TokenKind::SemiColon, |p| p.parse_statement())?;
         Ok(result)
     }
 
@@ -553,6 +553,15 @@ impl<'a> Parser<'a> {
                     span: Span { start, end },
                 })
             }
+
+            TokenKind::Case => {
+                let start = self.expect(TokenKind::Case)?.span.start;
+                let expr = self.parse_expression()?;
+                self.expect(TokenKind::Of)?;
+                let branches = self.list_until(vec![TokenKind::End], TokenKind::Pipe, |p| p.parse_case())?;
+                let end = self.expect(TokenKind::End)?.span.end;
+                Ok(Statement::Case { expr, branches, span: Span { start, end } })
+            }
             _ => Err(ParserError::UnexpectedToken { token: peek }),
         }
     }
@@ -576,6 +585,50 @@ impl<'a> Parser<'a> {
             start = end + 1;
         }
         Ok(result)
+    }
+
+    fn parse_case(&mut self) -> Result<Case, ParserError> {
+        let start = self.peek()?.span.start;
+        let label_list = self.list_until(vec![TokenKind::Colon], TokenKind::Comma,
+                                         |p|p.parse_label())?;
+        self.expect(TokenKind::Colon)?;
+        let statements = self.parse_statements()?;
+        let end = self.peek()?.span.end;
+        Ok(Case{
+            label_list,
+            statements,
+            span: Span { start, end },
+        })
+    }
+
+    fn parse_label(&mut self) -> Result<Label, ParserError> {
+        let part_1 = self.parse_label_value()?;
+        if self.at(&TokenKind::DotDot) {
+            self.bump()?;
+            let part_2 = self.parse_label_value()?;
+            Ok(Label::Range { low: part_1, high: part_2 })
+        } else {
+            Ok(Label::Single { value: part_1 })
+        }
+    }
+
+    fn parse_label_value(&mut self) -> Result<LabelValue, ParserError> {
+        let peek = self.peek()?.clone();
+        match peek.kind {
+            TokenKind::Int(value) => {
+                let span = self.bump()?.span;
+                Ok(LabelValue::Integer { value, span })
+            }
+            TokenKind::String(value) => {
+                let span = self.bump()?.span;
+                Ok(LabelValue::String { value, span })
+            }
+            TokenKind::Ident(_) => {
+                let qualified = self.parse_qualified_identifier()?;
+                Ok(LabelValue::QualifiedIdentifier(qualified))
+            }
+            _ => Err(ParserError::UnexpectedToken { token: peek }),
+        }
     }
 
     // -------------------------
@@ -953,7 +1006,7 @@ mod tests {
     (True $a:expr, $b:expr) => { t(TokenKind::True, $a, $b) };
     (False $a:expr, $b:expr) => { t(TokenKind::False, $a, $b) };
 
-    (Semi   $a:expr, $b:expr) => { t(TokenKind::SemiColon, $a, $b) };
+    (Semi   $a:expr, $b:expr) => { t(TokenKind::SemiColon,$a, $b) };
     (Comma  $a:expr, $b:expr) => { t(TokenKind::Comma,    $a, $b) };
     (Assign $a:expr, $b:expr) => { t(TokenKind::Assign,   $a, $b) };
     (Equal  $a:expr, $b:expr) => { t(TokenKind::Equal,    $a, $b) };
@@ -963,7 +1016,8 @@ mod tests {
     (Colon  $a:expr, $b:expr) => { t(TokenKind::Colon,    $a, $b) };
     (Caret  $a:expr, $b:expr) => { t(TokenKind::Caret,    $a, $b) };
     (Tilde  $a:expr, $b:expr) => { t(TokenKind::Tilde,    $a, $b) };
-    (Assign $a:expr, $b:expr) => { t(TokenKind::Assign, $a, $b) };
+    (Assign $a:expr, $b:expr) => { t(TokenKind::Assign,   $a, $b) };
+    (Pipe   $a:expr, $b:expr) => { t(TokenKind::Pipe,     $a, $b) };
 
     (LParen $a:expr, $b:expr) => { t(TokenKind::LParen,   $a, $b) };
     (RParen $a:expr, $b:expr) => { t(TokenKind::RParen,   $a, $b) };
@@ -971,12 +1025,12 @@ mod tests {
     (LCurly $a:expr, $b:expr) => { t(TokenKind::LCurly,   $a, $b) };
     (RCurly $a:expr, $b:expr) => { t(TokenKind::RCurly,   $a, $b) };
 
-    (LSquare $a:expr, $b:expr) => { t(TokenKind::LSquare,   $a, $b) };
-    (RSquare $a:expr, $b:expr) => { t(TokenKind::RSquare,   $a, $b) };
+    (LSquare $a:expr, $b:expr) => { t(TokenKind::LSquare, $a, $b) };
+    (RSquare $a:expr, $b:expr) => { t(TokenKind::RSquare, $a, $b) };
 
-    (Begin $a:expr, $b:expr) => { t(TokenKind::Begin, $a, $b) };
-    (End $a:expr, $b:expr) => { t(TokenKind::End, $a, $b) };
-    (Eof $a:expr, $b:expr) => { t(TokenKind::Eof, $a, $b) };
+    (Begin $a:expr, $b:expr) => { t(TokenKind::Begin,     $a, $b) };
+    (End $a:expr, $b:expr) => { t(TokenKind::End,         $a, $b) };
+    (Eof $a:expr, $b:expr) => { t(TokenKind::Eof,         $a, $b) };
 
     (Ampersand $a:expr, $b:expr) => { t(TokenKind::Ampersand, $a, $b) };
     (Or $a:expr, $b:expr) => { t(TokenKind::Or, $a, $b) };
@@ -986,6 +1040,7 @@ mod tests {
     (Then $a:expr, $b:expr) => { t(TokenKind::Then, $a, $b) };
     (Else $a:expr, $b:expr) => { t(TokenKind::Else, $a, $b) };
     (Elsif $a:expr, $b:expr) => { t(TokenKind::Elsif, $a, $b) };
+    (Case $a:expr, $b:expr) => { t(TokenKind::Case, $a, $b) };
     }
     // -------------------------
     // Module wrapper + parse helper
@@ -2048,7 +2103,7 @@ mod tests {
 
     mod statements {
         use super::*;
-        use crate::ast::Statement;
+        use crate::ast::{Label, LabelValue, Statement};
 
         #[test]
         fn parse_simplest_call() {
@@ -2306,6 +2361,155 @@ mod tests {
             assert_eq!(then_branch.len(), 1);
             assert_eq!(elsif_branches.len(), 2);
             assert!(else_branch.is_some());
+        }
+
+        #[test]
+        fn parse_case_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(Case 20, 24),
+                tok!(Ident "a", 24, 25),
+                tok!(Of 25, 27),
+                tok!(Int 1, 27, 28),
+                tok!(Colon 28, 29),
+                tok!(Ident "b", 29, 30),
+                tok!(End 31, 34),
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::Case { expr, branches, .. } = stmt else {
+                panic!("expected Case Statement");
+            };
+            assert_eq!(branches.len(), 1);
+            assert_eq!(branches[0].label_list.len(), 1);
+            let label = &branches[0].label_list[0];
+            let Label::Single { value, ..} = label else {
+                panic!("expected Single label");
+            };
+            let LabelValue::Integer { value: 1, .. } = value else {
+                panic!("expected Int label value");
+            };
+        }
+
+        #[test]
+        fn parse_case_with_range_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(Case 20, 24),
+                tok!(Ident "a", 24, 25),
+                tok!(Of 25, 27),
+                tok!(Int 1, 27, 28),
+                tok!(DotDot 28, 30),
+                tok!(Int 10, 30, 31),
+                tok!(Colon 31, 32),
+                tok!(Ident "b", 32, 33),
+                tok!(End 34, 37),
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::Case { expr, branches, .. } = stmt else {
+                panic!("expected Case Statement");
+            };
+            assert_eq!(branches.len(), 1);
+            assert_eq!(branches[0].label_list.len(), 1);
+            let label = &branches[0].label_list[0];
+            let Label::Range { low, high, ..} = label else {
+                panic!("expected Single label");
+            };
+            let LabelValue::Integer { value: 1, .. } = low else {
+                panic!("expected Int label value");
+            };
+            let LabelValue::Integer { value: 10, .. } = high else {
+                panic!("expected Int label value");
+            };
+        }
+
+        #[test]
+        fn parse_case_with_multiple_labels_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(Case 20, 24),
+                tok!(Ident "a", 24, 25),
+                tok!(Of 25, 27),
+                tok!(Int 1, 27, 28),
+                tok!(Comma  28, 30),
+                tok!(Int 10, 30, 31),
+                tok!(Colon 31, 32),
+                tok!(Ident "b", 32, 33),
+                tok!(End 34, 37),
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::Case { expr, branches, .. } = stmt else {
+                panic!("expected Case Statement");
+            };
+            assert_eq!(branches.len(), 1);
+            assert_eq!(branches[0].label_list.len(), 2);
+            let label_1 = &branches[0].label_list[0];
+            let label_2 = &branches[0].label_list[1];
+            let Label::Single { value, ..} = label_1 else {
+                panic!("expected Single label");
+            };
+            let LabelValue::Integer { value: 1, .. } = value else {
+                panic!("expected Int label value");
+            };
+            let Label::Single { value, ..} = label_2 else {
+                panic!("expected Single label");
+            };
+            let LabelValue::Integer { value: 10, .. } = value else {
+                panic!("expected Int label value");
+            };
+        }
+
+        #[test]
+        fn parse_case_with_multiple_cases_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(Case 20, 24),
+                tok!(Ident "a", 24, 25),
+                tok!(Of 25, 27),
+                tok!(Int 1, 27, 28),
+                tok!(Colon 28, 29),
+                tok!(Ident "b", 29, 30),
+                tok!(Pipe 30, 32),
+                tok!(Int 10, 32, 33),
+                tok!(Colon 33, 34),
+                tok!(Ident "c", 35, 36),
+                tok!(End 37, 40),
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::Case { expr, branches, .. } = stmt else {
+                panic!("expected Case Statement");
+            };
+            assert_eq!(branches.len(), 2);
+            assert_eq!(branches[0].label_list.len(), 1);
+            let label_1 = &branches[0].label_list[0];
+            let Label::Single { value, ..} = label_1 else {
+                panic!("expected Single label");
+            };
+            let LabelValue::Integer { value: 1, .. } = value else {
+                panic!("expected Int label value");
+            };
+            let label_2 = &branches[1].label_list[0];
+            let Label::Single { value, ..} = label_2 else {
+                panic!("expected Single label");
+            };
+            let LabelValue::Integer { value: 10, .. } = value else {
+                panic!("expected Int label value");
+            };
         }
     }
 }
