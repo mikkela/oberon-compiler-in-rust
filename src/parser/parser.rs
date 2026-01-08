@@ -408,7 +408,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_field_list(&mut self) -> Result<FieldList, ParserError> {
-        let mut fields = self.list_until(TokenKind::Colon, TokenKind::Comma,
+        let fields = self.list_until(TokenKind::Colon, TokenKind::Comma,
                                          |p| p.parse_identifier_def())?;
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_type()?;
@@ -2013,6 +2013,100 @@ mod tests {
                 "a"
             );
             assert_eq!(callee.selectors.len(), 0);
+        }
+
+        #[test]
+        fn parse_no_parameters_call() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(Ident "a", 20, 21),
+                tok!(LParen 21, 22),
+                tok!(RParen 22, 23),
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::Call { callee, .. } = stmt else {
+                panic!("expected Call Statement");
+            };
+            assert_eq!(callee.head.parts.len(), 1);
+            assert_eq!(
+                callee.head.parts[0].text,
+                "a"
+            );
+            assert_eq!(callee.selectors.len(), 1);
+            let selector = &callee.selectors[0];
+            match selector {
+                Selector::Call(args, _) => assert_eq!(args.len(), 0),
+                other => panic!("expected Call selector, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn parse_single_parameters_call() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(Ident "a", 20, 21),
+                tok!(LParen 21, 22),
+                tok!(Int 1, 22, 23),
+                tok!(RParen 23, 24),
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::Call { callee, .. } = stmt else {
+                panic!("expected Call Statement");
+            };
+            assert_eq!(callee.head.parts.len(), 1);
+            assert_eq!(
+                callee.head.parts[0].text,
+                "a"
+            );
+            assert_eq!(callee.selectors.len(), 1);
+            let selector = &callee.selectors[0];
+            let Selector::Call(args, _) = selector else {
+                panic!("expected Call selector")
+            };
+            assert_eq!(args.len(), 1);
+            assert_eq!(args[0], Expression::Int { value: 1, span: Span::new(22, 23) });
+        }
+
+        #[test]
+        fn parse_multiple_parameters_call() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(Ident "a", 20, 21),
+                tok!(LParen  21, 22),
+                tok!(Int 2, 23, 24),
+                tok!(Comma  24, 25),
+                tok!(Int 10, 25, 26),
+                tok!(RParen 26, 27),
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::Call { callee, .. } = stmt else {
+                panic!("expected Call Statement");
+            };
+            assert_eq!(callee.head.parts.len(), 1);
+            assert_eq!(
+                callee.head.parts[0].text,
+                "a"
+            );
+            assert_eq!(callee.selectors.len(), 1);
+            let selector = &callee.selectors[0];
+            let Selector::Call(args, _) = selector else {
+                panic!("expected Call selector")
+            };
+            assert_eq!(args.len(), 2);
+            assert_eq!(args[0], Expression::Int { value: 2, span: Span::new(23, 24) });
+            assert_eq!(args[1], Expression::Int { value: 10, span: Span::new(25, 26) });
         }
     }
 }
