@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOperation, FieldList, Spanned, UnaryOperation};
+use crate::ast::{BinaryOperation, FPSection, FieldList, FormalParameters, FormalType, Spanned, UnaryOperation};
 use crate::ast::{
     Declaration, Element, Expression, Identifier, IdentifierDef, Import, Module,
     QualifiedIdentifier, Type,
@@ -179,6 +179,18 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_qualified_identifier(&mut self) -> Result<QualifiedIdentifier, ParserError> {
+        let first = self.expect_ident()?;
+
+        if self.at(&TokenKind::Dot) {
+            self.bump()?; // '.'
+            let second = self.expect_ident()?;
+            Ok(QualifiedIdentifier::new(vec![first, second]))
+        } else {
+            Ok(QualifiedIdentifier::new(vec![first]))
+        }
+    }
+
     fn parse_identifier_def(&mut self) -> Result<IdentifierDef, ParserError> {
         let name = self.expect_ident()?;
         let star_tok = self.maybe_star()?;
@@ -351,9 +363,9 @@ impl<'a> Parser<'a> {
                 let base =
                     if self.at(&TokenKind::LParen) {
                         self.bump()?;
-                        let base = self.parse_named_type()?;
+                        let base = self.parse_qualified_identifier()?;
                         self.expect(TokenKind::RParen)?;
-                        Some( Box::new(base))
+                        Some( base)
                     } else {
                         None
                     };
@@ -377,6 +389,17 @@ impl<'a> Parser<'a> {
                 let pointee = self.parse_type()?;
                 let end = pointee.span().end;
                 Ok(Type::Pointer { pointee: Box::new(pointee), span: Span::new(start, end) })
+            }
+
+            TokenKind::Procedure => {
+                let initial_span = self.expect(TokenKind::Procedure)?.span;
+                let params = self.parse_formal_parameters()?;
+                if params.is_some() {
+                    let end = params.clone().unwrap().span().end;
+                    Ok(Type::Procedure { params, span: Span::new(initial_span.start, end) })
+                } else {
+                    Ok(Type::Procedure { params: None, span: initial_span })
+                }
             }
 
             _ => Err(ParserError::UnexpectedToken { token: peek }),
@@ -413,6 +436,81 @@ impl<'a> Parser<'a> {
         Ok(Type::Named { name, span })
     }
 
+    fn parse_formal_parameters(&mut self) -> Result<Option<FormalParameters>, ParserError> {
+        if self.at(&TokenKind::LParen) {
+            let start = self.expect(TokenKind::LParen)?.span.start;
+            let sections = if !self.at(&TokenKind::RParen) {
+                let mut l = vec![self.parse_fp_section()?];
+                while self.at(&TokenKind::SemiColon) {
+                    self.bump()?;
+                    l.push(self.parse_fp_section()?);
+                }
+                l
+            } else { vec![]};
+            let end = self.expect(TokenKind::RParen)?.span.end;
+
+            if self.at(&TokenKind::Colon) {
+               self.bump()?;
+                let return_type = self.parse_qualified_identifier()?;
+                let end = return_type.span().end;
+                Ok(Some(FormalParameters {
+                    sections,
+                    return_type: Some(return_type),
+                    span: Span { start, end},
+                }))
+            }
+            else {
+                Ok(Some(FormalParameters {
+                    sections,
+                    return_type: None,
+                    span: Span { start, end},
+                }))
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn parse_fp_section(&mut self) -> Result<FPSection, ParserError> {
+        let start = self.peek()?.span.start;
+        let by_ref = self.at(&TokenKind::Var);
+        if by_ref { self.bump()?; }
+        let mut names = vec![self.expect_ident()?];
+        while self.at(&TokenKind::Comma) {
+            self.bump()?;
+            names.push(self.expect_ident()?);
+        }
+        self.expect(TokenKind::Colon)?;
+        let ty = self.parse_formal_type()?;
+        let end = ty.span().end;
+        Ok(FPSection{
+            by_ref,
+            names,
+            ty,
+            span: Span { start, end},
+        })
+    }
+
+    fn parse_formal_type(&mut self) -> Result<FormalType, ParserError> {
+        let mut open_arrays = 0;
+        let start = self.peek()?.span.start;
+        let base = loop {
+            match self.peek()?.kind {
+                TokenKind::Array => {
+                    self.bump()?;
+                    self.expect(TokenKind::Of)?;
+                    open_arrays += 1;
+                }
+                _ => break self.parse_qualified_identifier()?,
+            }
+        };
+        let end = base.span().end;
+        Ok(FormalType{
+            open_arrays,
+            base,
+            span: Span { start, end },
+        })
+    }
     // -------------------------
     // Expressions
     // -------------------------
@@ -785,6 +883,8 @@ mod tests {
     (Record $a:expr, $b:expr) => { t(TokenKind::Record, $a, $b) };
     (Pointer $a:expr, $b:expr) => { t(TokenKind::Pointer, $a, $b) };
     (To $a:expr, $b:expr) => { t(TokenKind::To, $a, $b) };
+    (Procedure $a:expr, $b:expr) => { t(TokenKind::Procedure, $a, $b) };
+    (Var $a:expr, $b:expr) => { t(TokenKind::Var, $a, $b) };
 
     (Ident $s:literal, $a:expr, $b:expr) => { ident($s, $a, $b) };
     (Int   $v:expr,    $a:expr, $b:expr) => { int($v, $a, $b) };
@@ -1074,11 +1174,8 @@ mod tests {
             panic!("expected Array type");
         };
         assert!(base.is_some());
-        let base_type = base.as_ref().unwrap();
+        let name = base.as_ref().unwrap();
 
-        let Type::Named { name , .. } = base_type.deref() else {
-            panic!("expected Named type");
-        };
         assert_eq!(name.parts.len(), 1);
         assert_eq!(name.parts[0].text, "A");
 
@@ -1137,6 +1234,280 @@ mod tests {
         };
         assert_eq!(name.parts.len(), 1);
         assert_eq!(name.parts[0].text, "A");
+    }
+
+    #[test]
+    fn parse_minimal_procedure_type() {
+        let body = vec![
+            tok!(Type 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Procedure 24, 31),
+            tok!(Semi 31, 32),
+        ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
+        assert_eq!(module.declarations.len(), 1);
+        let Declaration::Type { ident, ty, .. } = &module.declarations[0] else {
+            panic!("expected Type declaration");
+        };
+        assert_eq!(ident.ident.text, "Foo");
+        assert_eq!(ident.exported, false);
+
+        let Type::Procedure { params, .. } = ty else {
+            panic!("expected Procedure type");
+        };
+
+        assert!(params.is_none());
+    }
+
+    #[test]
+    fn parse_procedure_with_empty_parameters_type() {
+        let body = vec![
+            tok!(Type 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Procedure 24, 31),
+            tok!(LParen 31, 32),
+            tok!(RParen 32, 33),
+            tok!(Semi 34, 35),
+        ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
+        assert_eq!(module.declarations.len(), 1);
+        let Declaration::Type { ident, ty, .. } = &module.declarations[0] else {
+            panic!("expected Type declaration");
+        };
+        assert_eq!(ident.ident.text, "Foo");
+        assert_eq!(ident.exported, false);
+
+        let Type::Procedure { params, .. } = ty else {
+            panic!("expected Procedure type");
+        };
+
+        assert!(params.is_some());
+        let parameters = params.as_ref().unwrap();
+        assert_eq!(parameters.return_type, None);
+        assert_eq!(parameters.sections.len(), 0);
+    }
+
+    #[test]
+    fn parse_procedure_with_empty_parameters_and_return_type() {
+        let body = vec![
+            tok!(Type 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Procedure 24, 31),
+            tok!(LParen 31, 32),
+            tok!(RParen 32, 33),
+            tok!(Colon 33, 34),
+            tok!(Ident "T", 35, 38),
+            tok!(Semi 38, 39),
+        ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
+        assert_eq!(module.declarations.len(), 1);
+        let Declaration::Type { ident, ty, .. } = &module.declarations[0] else {
+            panic!("expected Type declaration");
+        };
+        assert_eq!(ident.ident.text, "Foo");
+        assert_eq!(ident.exported, false);
+
+        let Type::Procedure { params, .. } = ty else {
+            panic!("expected Procedure type");
+        };
+
+        assert!(params.is_some());
+        let parameters = params.as_ref().unwrap();
+        assert_eq!(parameters.sections.len(), 0);
+        assert!(parameters.return_type.is_some());
+        let return_type = parameters.return_type.clone().unwrap();
+        assert!(return_type.parts.len() == 1);
+        assert_eq!(return_type.parts[0].text, "T");
+    }
+
+    #[test]
+    fn parse_procedure_with_one_fp_section_type() {
+        let body = vec![
+            tok!(Type 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Procedure 24, 31),
+            tok!(LParen 31, 32),
+            tok!(Ident "a", 32, 33),
+            tok!(Colon 33, 34),
+            tok!(Ident "T", 35, 38),
+            tok!(RParen 38, 39),
+            tok!(Semi 39, 40),
+        ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
+        assert_eq!(module.declarations.len(), 1);
+        let Declaration::Type { ident, ty, .. } = &module.declarations[0] else {
+            panic!("expected Type declaration");
+        };
+        assert_eq!(ident.ident.text, "Foo");
+        assert_eq!(ident.exported, false);
+
+        let Type::Procedure { params, .. } = ty else {
+            panic!("expected Procedure type");
+        };
+
+        assert!(params.is_some());
+        let parameters = params.as_ref().unwrap();
+        assert_eq!(parameters.return_type, None);
+        assert_eq!(parameters.sections.len(), 1);
+        assert_eq!(parameters.sections[0].names.len(), 1);
+        assert_eq!(parameters.sections[0].names[0].text, "a");
+        assert_eq!(parameters.sections[0].ty.open_arrays, 0);
+        assert_eq!(parameters.sections[0].ty.base.parts.len(), 1);
+        assert_eq!(parameters.sections[0].ty.base.parts[0].text, "T");
+        assert_eq!(parameters.sections[0].by_ref, false);
+    }
+
+    #[test]
+    fn parse_procedure_with_one_fp_section_with_multiple_args_type() {
+        let body = vec![
+            tok!(Type 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Procedure 24, 31),
+            tok!(LParen 31, 32),
+            tok!(Ident "a", 32, 33),
+            tok!(Comma 33, 34),
+            tok!(Ident "b", 34, 35),
+            tok!(Colon 35, 36),
+            tok!(Ident "T", 37, 40),
+            tok!(RParen 40, 41),
+            tok!(Semi 41, 42),
+        ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
+        assert_eq!(module.declarations.len(), 1);
+        let Declaration::Type { ident, ty, .. } = &module.declarations[0] else {
+            panic!("expected Type declaration");
+        };
+        assert_eq!(ident.ident.text, "Foo");
+        assert_eq!(ident.exported, false);
+
+        let Type::Procedure { params, .. } = ty else {
+            panic!("expected Procedure type");
+        };
+
+        assert!(params.is_some());
+        let parameters = params.as_ref().unwrap();
+        assert_eq!(parameters.return_type, None);
+        assert_eq!(parameters.sections.len(), 1);
+        assert_eq!(parameters.sections[0].names.len(), 2);
+        assert_eq!(parameters.sections[0].names[0].text, "a");
+        assert_eq!(parameters.sections[0].names[1].text, "b");
+        assert_eq!(parameters.sections[0].ty.open_arrays, 0);
+        assert_eq!(parameters.sections[0].ty.base.parts.len(), 1);
+        assert_eq!(parameters.sections[0].ty.base.parts[0].text, "T");
+        assert_eq!(parameters.sections[0].by_ref, false);
+    }
+
+    #[test]
+    fn parse_procedure_with_one_fp_section_with_var_type() {
+        let body = vec![
+            tok!(Type 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Procedure 24, 31),
+            tok!(LParen 31, 32),
+            tok!(Var 32, 35),
+            tok!(Ident "a", 36, 37),
+            tok!(Colon 37, 38),
+            tok!(Ident "T", 39, 40),
+            tok!(RParen 40, 41),
+            tok!(Semi 41, 42),
+        ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
+        assert_eq!(module.declarations.len(), 1);
+        let Declaration::Type { ident, ty, .. } = &module.declarations[0] else {
+            panic!("expected Type declaration");
+        };
+        assert_eq!(ident.ident.text, "Foo");
+        assert_eq!(ident.exported, false);
+
+        let Type::Procedure { params, .. } = ty else {
+            panic!("expected Procedure type");
+        };
+
+        assert!(params.is_some());
+        let parameters = params.as_ref().unwrap();
+        assert_eq!(parameters.return_type, None);
+        assert_eq!(parameters.sections.len(), 1);
+        assert_eq!(parameters.sections[0].names.len(), 1);
+        assert_eq!(parameters.sections[0].names[0].text, "a");
+        assert_eq!(parameters.sections[0].ty.open_arrays, 0);
+        assert_eq!(parameters.sections[0].ty.base.parts.len(), 1);
+        assert_eq!(parameters.sections[0].ty.base.parts[0].text, "T");
+        assert_eq!(parameters.sections[0].by_ref, true);
+    }
+
+    #[test]
+    fn parse_procedure_with_two_fp_sections_type() {
+        let body = vec![
+            tok!(Type 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            tok!(Procedure 24, 31),
+            tok!(LParen 31, 32),
+            tok!(Ident "a", 32, 33),
+            tok!(Colon 33, 34),
+            tok!(Ident "T", 35, 38),
+            tok!(Semi 38, 39),
+            tok!(Ident "b", 39, 40),
+            tok!(Colon 40, 41),
+            tok!(Ident "U", 42, 44),
+            tok!(RParen 44, 45),
+            tok!(Semi 45, 46)
+        ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
+        let module = parse_module(tokens);
+
+        assert_eq!(module.declarations.len(), 1);
+        let Declaration::Type { ident, ty, .. } = &module.declarations[0] else {
+            panic!("expected Type declaration");
+        };
+        assert_eq!(ident.ident.text, "Foo");
+        assert_eq!(ident.exported, false);
+
+        let Type::Procedure { params, .. } = ty else {
+            panic!("expected Procedure type");
+        };
+
+        assert!(params.is_some());
+        let parameters = params.as_ref().unwrap();
+        assert_eq!(parameters.return_type, None);
+        assert_eq!(parameters.sections.len(), 2);
+        assert_eq!(parameters.sections[0].names.len(), 1);
+        assert_eq!(parameters.sections[0].names[0].text, "a");
+        assert_eq!(parameters.sections[0].ty.open_arrays, 0);
+        assert_eq!(parameters.sections[0].ty.base.parts.len(), 1);
+        assert_eq!(parameters.sections[0].ty.base.parts[0].text, "T");
+        assert_eq!(parameters.sections[0].by_ref, false);
+        assert_eq!(parameters.sections[1].names.len(), 1);
+        assert_eq!(parameters.sections[1].names[0].text, "b");
+        assert_eq!(parameters.sections[1].ty.open_arrays, 0);
+        assert_eq!(parameters.sections[1].ty.base.parts.len(), 1);
+        assert_eq!(parameters.sections[1].ty.base.parts[0].text, "U");
+        assert_eq!(parameters.sections[1].by_ref, false);
     }
     #[test]
     fn parse_set_const() {

@@ -94,8 +94,8 @@ pub enum Declaration {
     Type  { ident: IdentifierDef, ty: Type, span: Span },
 
     // Keep placeholders (you can evolve them later)
-    Var   { ident: IdentifierDef, ty: TypeReference, span: Span },
-    Proc  { ident: IdentifierDef, params: Vec<Parameter>, ret: Option<TypeReference>, body: Vec<Statement>, span: Span },
+    Var   { ident: IdentifierDef, ty: QualifiedIdentifier, span: Span },
+    Proc  { ident: IdentifierDef, params: Vec<Parameter>, ret: Option<QualifiedIdentifier>, body: Vec<Statement>, span: Span },
 }
 
 impl Spanned for Declaration {
@@ -131,8 +131,9 @@ impl Spanned for FieldList {
 pub enum Type {
     Named   { name: QualifiedIdentifier, span: Span },
     Array   { lengths: Vec<Expression>, element: Box<Type>, span: Span },
-    Record  { base: Option<Box<Type>>, field_lists: Vec<FieldList>, span: Span },
+    Record  { base: Option<QualifiedIdentifier>, field_lists: Vec<FieldList>, span: Span },
     Pointer { pointee: Box<Type>, span: Span },
+    Procedure { params: Option<FormalParameters>, span: Span },
 }
 
 impl Spanned for Type {
@@ -142,19 +143,38 @@ impl Spanned for Type {
             Type::Array { span, .. } => *span,
             Type::Record { span, .. } => *span,
             Type::Pointer { span, .. } => *span,
+            Type::Procedure { span, .. } => *span,
         }
     }
 }
 
+/// FormalType = {ARRAY OF} qualident
 #[derive(Clone, Debug, PartialEq)]
-pub struct TypeReference {
-    pub name: QualifiedIdentifier,
+pub struct FormalType {
+    pub open_arrays: usize,            // number of leading "ARRAY OF"
+    pub base: QualifiedIdentifier,     // qualident
     pub span: Span,
 }
+impl Spanned for FormalType { fn span(&self) -> Span { self.span } }
 
-impl Spanned for TypeReference {
-    fn span(&self) -> Span { self.span }
+/// FPSection = [VAR] ident {"," ident} ":" FormalType
+#[derive(Clone, Debug, PartialEq)]
+pub struct FPSection {
+    pub by_ref: bool,                  // VAR present
+    pub names: Vec<Identifier>,      // ident list (optionally exported if you allow it)
+    pub ty: FormalType,
+    pub span: Span,
 }
+impl Spanned for FPSection { fn span(&self) -> Span { self.span } }
+
+/// FormalParameters = "(" [FPSection {";" FPSection}] ")" [":" qualident]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FormalParameters {
+    pub sections: Vec<FPSection>,              // empty allowed
+    pub return_type: Option<QualifiedIdentifier>,
+    pub span: Span,                             // from '(' to end of return type (if any)
+}
+impl Spanned for FormalParameters { fn span(&self) -> Span { self.span } }
 
 // -------------------------
 // Statements
@@ -163,7 +183,7 @@ impl Spanned for TypeReference {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Parameter {
     pub name: IdentifierDef,
-    pub ty: TypeReference,
+    pub ty: QualifiedIdentifier,
     pub span: Span,
 }
 
