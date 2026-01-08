@@ -517,9 +517,17 @@ impl<'a> Parser<'a> {
             TokenKind::Ident(_) => {
                 let first = self.expect_ident()?;
                 let start = first.span.start;
-                let callee = self.parse_designator_or_error(first)?;
-                let end = callee.span().end;
-                Ok(Statement::Call { callee, span: Span {start, end} })
+                let designator = self.parse_designator_or_error(first)?;
+                let designator_end = designator.span().end;
+                if self.at(&TokenKind::Assign) {
+                    self.bump()?;
+                    let value = self.parse_expression()?;
+                    let value_end = value.span().end;
+                    Ok(Statement::Assign {target: designator, value, span: Span {start, end: value_end}})
+                } else {
+                    Ok(Statement::Call { callee: designator, span: Span {start, end: designator_end} })
+                }
+
             }
 
             _ => Err(ParserError::UnexpectedToken { token: peek }),
@@ -911,6 +919,7 @@ mod tests {
     (Colon  $a:expr, $b:expr) => { t(TokenKind::Colon,    $a, $b) };
     (Caret  $a:expr, $b:expr) => { t(TokenKind::Caret,    $a, $b) };
     (Tilde  $a:expr, $b:expr) => { t(TokenKind::Tilde,    $a, $b) };
+    (Assign $a:expr, $b:expr) => { t(TokenKind::Assign, $a, $b) };
 
     (LParen $a:expr, $b:expr) => { t(TokenKind::LParen,   $a, $b) };
     (RParen $a:expr, $b:expr) => { t(TokenKind::RParen,   $a, $b) };
@@ -2107,6 +2116,31 @@ mod tests {
             assert_eq!(args.len(), 2);
             assert_eq!(args[0], Expression::Int { value: 2, span: Span::new(23, 24) });
             assert_eq!(args[1], Expression::Int { value: 10, span: Span::new(25, 26) });
+        }
+
+        #[test]
+        fn parse_assignment() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(Ident "a", 20, 21),
+                tok!(Assign 21, 23),
+                tok!(Int 1, 23, 24),
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::Assign { target, value, .. } = stmt else {
+                panic!("expected Assign Statement");
+            };
+            assert_eq!(target.head.parts.len(), 1);
+            assert_eq!(
+                target.head.parts[0].text,
+                "a"
+            );
+            assert_eq!(target.selectors.len(), 0);
+            assert_eq!(value, Expression::Int { value: 1, span: Span::new(23, 24) });
         }
     }
 }
