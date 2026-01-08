@@ -562,6 +562,21 @@ impl<'a> Parser<'a> {
                 let end = self.expect(TokenKind::End)?.span.end;
                 Ok(Statement::Case { expr, branches, span: Span { start, end } })
             }
+
+            TokenKind::While => {
+                let start = self.expect(TokenKind::While)?.span.start;
+                let cond = self.parse_expression()?;
+                self.expect(TokenKind::Do)?;
+                let body = self.parse_statements()?;
+                let elsif_branches = self.parse_elsif_statements(TokenKind::Do)?;
+                let end = self.expect(TokenKind::End)?.span.end;
+                Ok(Statement::While {
+                    cond,
+                    body,
+                    elsif_branches,
+                    span: Span { start, end},
+                })
+            }
             _ => Err(ParserError::UnexpectedToken { token: peek }),
         }
     }
@@ -1041,6 +1056,13 @@ mod tests {
     (Else $a:expr, $b:expr) => { t(TokenKind::Else, $a, $b) };
     (Elsif $a:expr, $b:expr) => { t(TokenKind::Elsif, $a, $b) };
     (Case $a:expr, $b:expr) => { t(TokenKind::Case, $a, $b) };
+    (While $a:expr, $b:expr) => { t(TokenKind::While, $a, $b) };
+    (Do $a:expr, $b:expr) => { t(TokenKind::Do, $a, $b) };
+    (Repeat $a:expr, $b:expr) => { t(TokenKind::Repeat, $a, $b) };
+    (Until $a:expr, $b:expr) => { t(TokenKind::Until, $a, $b) };
+    (For $a:expr, $b:expr) => { t(TokenKind::For, $a, $b) };
+    (To $a:expr, $b:expr) => { t(TokenKind::To, $a, $b) };
+    (By $a:expr, $b:expr) => { t(TokenKind::By, $a, $b) };
     }
     // -------------------------
     // Module wrapper + parse helper
@@ -2510,6 +2532,58 @@ mod tests {
             let LabelValue::Integer { value: 10, .. } = value else {
                 panic!("expected Int label value");
             };
+        }
+
+        #[test]
+        fn parse_while_do_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(While 20, 22),
+                tok!(True 23, 27),
+                tok!(Do 27, 31),
+                tok!(Ident "a", 32, 33),
+                tok!(End 34, 37),
+
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::While { cond, body, elsif_branches, .. } = stmt else {
+                panic!("expected While Statement");
+            };
+            assert_eq!(cond, Expression::Bool { value: true, span: Span::new(23, 27) });
+            assert_eq!(body.len(), 1);
+            assert!(elsif_branches.is_empty());
+        }
+
+        #[test]
+        fn parse_while_do_elsif_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(While 20, 22),
+                tok!(True 23, 27),
+                tok!(Do 27, 31),
+                tok!(Ident "a", 32, 33),
+                tok!(Elsif 33, 36),
+                tok!(False 37, 41),
+                tok!(Do 41, 45),
+                tok!(Ident "b", 46, 47),
+                tok!(End 48, 50),
+
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::While { cond, body, elsif_branches, .. } = stmt else {
+                panic!("expected If Statement");
+            };
+            assert_eq!(cond, Expression::Bool { value: true, span: Span::new(23, 27) });
+            assert_eq!(body.len(), 1);
+            assert_eq!(elsif_branches.len(), 1);
         }
     }
 }

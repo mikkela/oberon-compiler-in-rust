@@ -197,6 +197,7 @@ pub enum Statement {
     Call   { callee: Designator, span: Span },
     If     { cond: Expression, then_branch: Vec<Statement>, elsif_branches: Vec<ElsIf>, else_branch: Option<Vec<Statement>>, span: Span },
     Case  { expr: Expression, branches: Vec<Case>, span: Span },
+    While  { cond: Expression, body: Vec<Statement>, elsif_branches: Vec<ElsIf>, span: Span },
 }
 
 impl Spanned for Statement {
@@ -206,6 +207,7 @@ impl Spanned for Statement {
             Statement::Call   { span, .. } => *span,
             Statement::If     { span, .. } => *span,
             Statement::Case   { span, .. } => *span,
+            Statement::While  { span, .. } => *span,
         }
     }
 }
