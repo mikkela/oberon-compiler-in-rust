@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOperation, FPSection, FieldList, FormalParameters, FormalType, Spanned, UnaryOperation};
+use crate::ast::{BinaryOperation, Designator, FPSection, FieldList, FormalParameters, FormalType, Spanned, Statement, UnaryOperation};
 use crate::ast::{
     Declaration, Element, Expression, Identifier, IdentifierDef, Import, Module,
     QualifiedIdentifier, Type,
@@ -147,15 +147,16 @@ impl<'a> Parser<'a> {
     // Small parsing utilities
     // -------------------------
 
-    fn comma_list_until<T>(
+    fn list_until<T>(
         &mut self,
         until: TokenKind,
+        separator: TokenKind,
         mut item: impl FnMut(&mut Self) -> Result<T, ParserError>,
     ) -> Result<Vec<T>, ParserError> {
         let mut items = vec![];
         while !self.at(&until) {
             if !items.is_empty() {
-                self.expect(TokenKind::Comma)?;
+                self.expect(separator.clone())?;
             }
             items.push(item(self)?);
         }
@@ -237,6 +238,13 @@ impl<'a> Parser<'a> {
         let import_list = self.parse_import_list()?;
         let declaration_sequence = self.parse_declaration_sequence()?;
 
+        let stmts = if self.at(&TokenKind::Begin) {
+            self.bump()?;
+            self.parse_statements()?
+        } else {
+            vec![]
+        };
+
         self.expect(TokenKind::End)?;
         let second_ident = self.expect_ident()?;
         let end = self.expect(TokenKind::Dot)?;
@@ -244,7 +252,7 @@ impl<'a> Parser<'a> {
         Ok(Module {
             name: first_ident,
             import_list,
-            stmts: vec![],
+            stmts,
             span: Span::new(begin.span.start, end.span.end),
             end_name: second_ident,
             declarations: declaration_sequence,
@@ -341,12 +349,8 @@ impl<'a> Parser<'a> {
                 let start = self.expect(TokenKind::Array)?.span.start;
 
                 // ARRAY len {, len} OF type
-                let mut lengths = vec![self.parse_expression()?];
-                while self.at(&TokenKind::Comma) {
-                    self.bump()?;
-                    lengths.push(self.parse_expression()?);
-                }
-
+                let lengths =
+                    self.list_until(TokenKind::Of, TokenKind::Comma, |p|p.parse_expression())?;
                 self.expect(TokenKind::Of)?;
                 let element = self.parse_type()?;
                 let end = element.span().end;
@@ -369,11 +373,8 @@ impl<'a> Parser<'a> {
                     } else {
                         None
                     };
-                let mut field_lists = vec![self.parse_field_list()?];
-                while self.at(&TokenKind::SemiColon) {
-                    self.bump()?;
-                    field_lists.push(self.parse_field_list()?);
-                };
+                let field_lists = self.list_until(TokenKind::End, TokenKind::SemiColon,
+                                                      |p| p.parse_field_list())?;
                 let end = self.expect(TokenKind::End)?.span.end;
 
                 Ok(Type::Record {
@@ -407,11 +408,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_field_list(&mut self) -> Result<FieldList, ParserError> {
-        let mut fields = vec![self.parse_identifier_def()?];
-        while self.at(&TokenKind::Comma) {
-            self.bump()?;
-            fields.push(self.parse_identifier_def()?);
-        };
+        let mut fields = self.list_until(TokenKind::Colon, TokenKind::Comma,
+                                         |p| p.parse_identifier_def())?;
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_type()?;
         Ok(FieldList{
@@ -440,12 +438,7 @@ impl<'a> Parser<'a> {
         if self.at(&TokenKind::LParen) {
             let start = self.expect(TokenKind::LParen)?.span.start;
             let sections = if !self.at(&TokenKind::RParen) {
-                let mut l = vec![self.parse_fp_section()?];
-                while self.at(&TokenKind::SemiColon) {
-                    self.bump()?;
-                    l.push(self.parse_fp_section()?);
-                }
-                l
+                self.list_until(TokenKind::RParen, TokenKind::SemiColon, |p| p.parse_fp_section())?
             } else { vec![]};
             let end = self.expect(TokenKind::RParen)?.span.end;
 
@@ -475,11 +468,8 @@ impl<'a> Parser<'a> {
         let start = self.peek()?.span.start;
         let by_ref = self.at(&TokenKind::Var);
         if by_ref { self.bump()?; }
-        let mut names = vec![self.expect_ident()?];
-        while self.at(&TokenKind::Comma) {
-            self.bump()?;
-            names.push(self.expect_ident()?);
-        }
+        let names = self.list_until(TokenKind::Colon, TokenKind::Comma,
+                                    |p| p.expect_ident())?;
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_formal_type()?;
         let end = ty.span().end;
@@ -511,6 +501,31 @@ impl<'a> Parser<'a> {
             span: Span { start, end },
         })
     }
+
+    // -------------------------
+    // Statements
+    // -------------------------
+    fn parse_statements(&mut self) -> Result<Vec<Statement>, ParserError> {
+        let result = self.list_until(TokenKind::End, TokenKind::SemiColon, |p| p.parse_statement())?;
+        Ok(result)
+    }
+
+    fn parse_statement(&mut self) -> Result<Statement, ParserError> {
+        let peek = self.peek()?.clone();
+
+        match peek.kind {
+            TokenKind::Ident(_) => {
+                let first = self.expect_ident()?;
+                let start = first.span.start;
+                let callee = self.parse_designator_or_error(first)?;
+                let end = callee.span().end;
+                Ok(Statement::Call { callee, span: Span {start, end} })
+            }
+
+            _ => Err(ParserError::UnexpectedToken { token: peek }),
+        }
+    }
+
     // -------------------------
     // Expressions
     // -------------------------
@@ -639,7 +654,7 @@ impl<'a> Parser<'a> {
 
             TokenKind::Ident(_) => {
                 let first = self.expect_ident()?;
-                self.parse_designator_or_error(first)
+                Ok(Expression::Designator(self.parse_designator_or_error(first)?))
             }
 
             TokenKind::LParen => {
@@ -665,7 +680,7 @@ impl<'a> Parser<'a> {
     fn parse_set_literal(&mut self) -> Result<Expression, ParserError> {
         let lcurly = self.expect(TokenKind::LCurly)?;
 
-        let elements = self.comma_list_until(TokenKind::RCurly, |p| p.parse_element())?;
+        let elements = self.list_until(TokenKind::RCurly, TokenKind::Comma, |p| p.parse_element())?;
         let rcurly = self.expect(TokenKind::RCurly)?;
 
         Ok(Expression::Set {
@@ -674,7 +689,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_designator_or_error(&mut self, first: Identifier) -> Result<Expression, ParserError> {
+    fn parse_designator_or_error(&mut self, first: Identifier) -> Result<Designator, ParserError> {
         // parse head: either [first] or [first, second] if "first.second"
         let mut parts = vec![first];
 
@@ -728,11 +743,11 @@ impl<'a> Parser<'a> {
 
         let span = Span::new(head.span().start, end);
 
-        Ok(crate::ast::Expression::Designator(crate::ast::Designator {
+        Ok(crate::ast::Designator {
             head,
             selectors,
             span,
-        }))
+        })
     }
 
     fn parse_index_selector(&mut self) -> Result<Option<crate::ast::Selector>, ParserError> {
@@ -743,14 +758,8 @@ impl<'a> Parser<'a> {
         self.bump()?; // '['
 
         // (Oberon) index kan være flere udtryk adskilt af comma: a[i, j]
-        let mut exprs = vec![];
-        if !self.at(&TokenKind::RSquare) {
-            exprs.push(self.parse_expression()?);
-            while self.eat(TokenKind::Comma)?.is_some() {
-                exprs.push(self.parse_expression()?);
-            }
-        }
-
+        let exprs = self.list_until(TokenKind::RSquare, TokenKind::Comma,
+                                        |p| p.parse_expression())?;
         self.expect(TokenKind::RSquare)?;
         // Hvis du vil have span på Index, er det bedst at gemme span i Selector::Index.
         // I min AST-variant var Index(Vec<Expression>) uden span; det fungerer, men span bliver “best effort”.
@@ -842,7 +851,7 @@ impl<'a> Parser<'a> {
     fn parse_call_args(&mut self) -> Result<Option<(Vec<Expression>, Span)>, ParserError> {
         if !self.at(&TokenKind::LParen) { return Ok(None); }
         let lpar = self.bump()?;
-        let args = self.comma_list_until(TokenKind::RParen, |p| p.parse_expression())?;
+        let args = self.list_until(TokenKind::RParen, TokenKind::Comma, |p| p.parse_expression())?;
         let rpar = self.expect(TokenKind::RParen)?;
         Ok(Some((args, Span::new(lpar.span.start, rpar.span.end))))
     }
@@ -906,6 +915,8 @@ mod tests {
 
     (End $a:expr, $b:expr) => { t(TokenKind::End, $a, $b) };
     (Eof $a:expr, $b:expr) => { t(TokenKind::Eof, $a, $b) };
+
+    (Begin $a:expr, $b:expr) => { t(TokenKind::Begin, $a, $b) };
     }
 
     // -------------------------
@@ -2037,6 +2048,32 @@ mod tests {
         assert_eq!(*value, false);
     }
 
+    mod statements {
+        use super::*;
+        use crate::ast::Statement;
+
+        #[test]
+        fn parse_simplest_call() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(Ident "a", 20, 21),
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::Call { callee, .. } = stmt else {
+                panic!("expected Call Statement");
+            };
+            assert_eq!(callee.head.parts.len(), 1);
+            assert_eq!(
+                callee.head.parts[0].text,
+                "a"
+            );
+            assert_eq!(callee.selectors.len(), 0);
+        }
+    }
 }
 
 #[cfg(test)]

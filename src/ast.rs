@@ -195,7 +195,6 @@ impl Spanned for Parameter {
 pub enum Statement {
     Assign { target: Designator, value: Expression, span: Span },
     Call   { callee: Designator, span: Span },
-    Return { value: Option<Expression>, span: Span },
 }
 
 impl Spanned for Statement {
@@ -203,7 +202,6 @@ impl Spanned for Statement {
         match self {
             Statement::Assign { span, .. } => *span,
             Statement::Call   { span, .. } => *span,
-            Statement::Return { span, .. } => *span,
         }
     }
 }
