@@ -898,6 +898,9 @@ mod tests {
     (Ident $s:literal, $a:expr, $b:expr) => { ident($s, $a, $b) };
     (Int   $v:expr,    $a:expr, $b:expr) => { int($v, $a, $b) };
 
+    (True $a:expr, $b:expr) => { t(TokenKind::True, $a, $b) };
+    (False $a:expr, $b:expr) => { t(TokenKind::False, $a, $b) };
+
     (Semi   $a:expr, $b:expr) => { t(TokenKind::SemiColon, $a, $b) };
     (Comma  $a:expr, $b:expr) => { t(TokenKind::Comma,    $a, $b) };
     (Assign $a:expr, $b:expr) => { t(TokenKind::Assign,   $a, $b) };
@@ -906,6 +909,8 @@ mod tests {
     (Dot    $a:expr, $b:expr) => { t(TokenKind::Dot,      $a, $b) };
     (DotDot $a:expr, $b:expr) => { t(TokenKind::DotDot,   $a, $b) };
     (Colon  $a:expr, $b:expr) => { t(TokenKind::Colon,    $a, $b) };
+    (Caret  $a:expr, $b:expr) => { t(TokenKind::Caret,    $a, $b) };
+    (Tilde  $a:expr, $b:expr) => { t(TokenKind::Tilde,    $a, $b) };
 
     (LParen $a:expr, $b:expr) => { t(TokenKind::LParen,   $a, $b) };
     (RParen $a:expr, $b:expr) => { t(TokenKind::RParen,   $a, $b) };
@@ -913,10 +918,16 @@ mod tests {
     (LCurly $a:expr, $b:expr) => { t(TokenKind::LCurly,   $a, $b) };
     (RCurly $a:expr, $b:expr) => { t(TokenKind::RCurly,   $a, $b) };
 
+    (LSquare $a:expr, $b:expr) => { t(TokenKind::LSquare,   $a, $b) };
+    (RSquare $a:expr, $b:expr) => { t(TokenKind::RSquare,   $a, $b) };
+
+    (Begin $a:expr, $b:expr) => { t(TokenKind::Begin, $a, $b) };
     (End $a:expr, $b:expr) => { t(TokenKind::End, $a, $b) };
     (Eof $a:expr, $b:expr) => { t(TokenKind::Eof, $a, $b) };
 
-    (Begin $a:expr, $b:expr) => { t(TokenKind::Begin, $a, $b) };
+    (Ampersand $a:expr, $b:expr) => { t(TokenKind::Ampersand, $a, $b) };
+    (Or $a:expr, $b:expr) => { t(TokenKind::Or, $a, $b) };
+    (Neq $a:expr, $b:expr) => { t(TokenKind::NotEqual, $a, $b) };
     }
 
     // -------------------------
@@ -1569,26 +1580,19 @@ mod tests {
 
     #[test]
     fn parse_type_guard_selector_simple() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
             // x(T)
-            Token::new(TokenKind::Ident("x".to_string()), Span::new(25, 26)),
-            Token::new(TokenKind::LParen, Span::new(26, 27)),
-            Token::new(TokenKind::Ident("T".to_string()), Span::new(27, 28)),
-            Token::new(TokenKind::RParen, Span::new(28, 29)),
-            Token::new(TokenKind::SemiColon, Span::new(29, 30)),
-            Token::new(TokenKind::End, Span::new(30, 33)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(34, 40)),
-            Token::new(TokenKind::Dot, Span::new(40, 41)),
-            Token::new(TokenKind::Eof, Span::new(41, 41)),
+            tok!(Ident "x", 25, 26),
+            tok!(LParen 26, 27),
+            tok!(Ident "T", 27, 28),
+            tok!(RParen 28, 29),
+            tok!(Semi 29, 30),
         ];
 
+        let tokens = module_tokens("monkey", "monkey", body);
         let mut parser = super::Parser { tokens: &tokens, pos: 0 };
         let module = parser.parse().unwrap();
 
@@ -1620,28 +1624,21 @@ mod tests {
 
     #[test]
     fn parse_type_guard_selector_qualified() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
             // x(M.T)
-            Token::new(TokenKind::Ident("x".to_string()), Span::new(25, 26)),
-            Token::new(TokenKind::LParen, Span::new(26, 27)),
-            Token::new(TokenKind::Ident("M".to_string()), Span::new(27, 28)),
-            Token::new(TokenKind::Dot, Span::new(28, 29)),
-            Token::new(TokenKind::Ident("T".to_string()), Span::new(29, 30)),
-            Token::new(TokenKind::RParen, Span::new(30, 31)),
-            Token::new(TokenKind::SemiColon, Span::new(31, 32)),
-            Token::new(TokenKind::End, Span::new(32, 35)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(36, 42)),
-            Token::new(TokenKind::Dot, Span::new(42, 43)),
-            Token::new(TokenKind::Eof, Span::new(43, 43)),
+            tok!(Ident "x", 25, 26),
+            tok!(LParen 26, 27),
+            tok!(Ident "M", 27, 28),
+            tok!(Dot 28, 29),
+            tok!(Ident "T", 29, 30),
+            tok!(RParen 30, 31),
+            tok!(Semi 31, 32)
         ];
 
+        let tokens = module_tokens("monkey", "monkey", body);
         let mut parser = super::Parser { tokens: &tokens, pos: 0 };
         let module = parser.parse().unwrap();
 
@@ -1668,25 +1665,19 @@ mod tests {
 
     #[test]
     fn parse_call_not_type_guard_disambiguation() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
             // x(1)  -> MUST be Call, not TypeGuard
-            Token::new(TokenKind::Ident("x".to_string()), Span::new(25, 26)),
-            Token::new(TokenKind::LParen, Span::new(26, 27)),
-            Token::new(TokenKind::Int(1), Span::new(27, 28)),
-            Token::new(TokenKind::RParen, Span::new(28, 29)),
-            Token::new(TokenKind::SemiColon, Span::new(29, 30)),
-            Token::new(TokenKind::End, Span::new(30, 33)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(34, 40)),
-            Token::new(TokenKind::Dot, Span::new(40, 41)),
-            Token::new(TokenKind::Eof, Span::new(41, 41)),
+            tok!(Ident "x", 25, 26),
+            tok!(LParen 26, 27),
+            tok!(Int 1, 27, 28),
+            tok!(RParen 28, 29),
+            tok!(Semi 29, 30),
         ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
 
         let mut parser = super::Parser { tokens: &tokens, pos: 0 };
         let module = parser.parse().unwrap();
@@ -1711,28 +1702,22 @@ mod tests {
 
     #[test]
     fn parse_type_guard_then_call_chain() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
             // x(T)(1)
-            Token::new(TokenKind::Ident("x".to_string()), Span::new(25, 26)),
-            Token::new(TokenKind::LParen, Span::new(26, 27)),
-            Token::new(TokenKind::Ident("T".to_string()), Span::new(27, 28)),
-            Token::new(TokenKind::RParen, Span::new(28, 29)),
-            Token::new(TokenKind::LParen, Span::new(29, 30)),
-            Token::new(TokenKind::Int(1), Span::new(30, 31)),
-            Token::new(TokenKind::RParen, Span::new(31, 32)),
-            Token::new(TokenKind::SemiColon, Span::new(32, 33)),
-            Token::new(TokenKind::End, Span::new(33, 36)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(37, 43)),
-            Token::new(TokenKind::Dot, Span::new(43, 44)),
-            Token::new(TokenKind::Eof, Span::new(44, 44)),
+            tok!(Ident "x", 25, 26),
+            tok!(LParen 26, 27),
+            tok!(Ident "T", 27, 28),
+            tok!(RParen 28, 29),
+            tok!(LParen 29, 30),
+            tok!(Int 1, 30, 31),
+            tok!(RParen 31, 32),
+            tok!(Semi 32, 33),
         ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
 
         let mut parser = super::Parser { tokens: &tokens, pos: 0 };
         let module = parser.parse().unwrap();
@@ -1770,32 +1755,25 @@ mod tests {
     }
     #[test]
     fn parse_index_call_deref_field_chain() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-
-            // x^.y
-            Token::new(TokenKind::Ident("x".to_string()), Span::new(25, 26)),
-            Token::new(TokenKind::LSquare, Span::new(26, 27)),
-            Token::new(TokenKind::Int(1), Span::new(27, 28)),
-            Token::new(TokenKind::RSquare, Span::new(28, 29)),
-            Token::new(TokenKind::LParen, Span::new(29, 30)),
-            Token::new(TokenKind::Int(2), Span::new(30, 31)),
-            Token::new(TokenKind::RParen, Span::new(31, 32)),
-            Token::new(TokenKind::Caret, Span::new(32, 33)),
-            Token::new(TokenKind::Dot, Span::new(33, 34)),
-            Token::new(TokenKind::Ident("y".to_string()), Span::new(34, 35)),
-            Token::new(TokenKind::SemiColon, Span::new(35, 36)),
-            Token::new(TokenKind::End, Span::new(36, 39)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(40, 46)),
-            Token::new(TokenKind::Dot, Span::new(46, 47)),
-            Token::new(TokenKind::Eof, Span::new(47, 47)),
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            // x[1](2)^.y
+            tok!(Ident "x", 25, 26),
+            tok!(LSquare 26, 27),
+            tok!(Int 1, 27, 28),
+            tok!(RSquare 28, 29),
+            tok!(LParen 29, 30),
+            tok!(Int 2, 30, 31),
+            tok!(RParen 31, 32),
+            tok!(Caret 32, 33),
+            tok!(Dot 33, 34),
+            tok!(Ident "y", 35, 37),
+            tok!(Semi 37, 38),
         ];
 
+        let tokens = module_tokens("monkey", "monkey", body);
         let mut parser = super::Parser { tokens: &tokens, pos: 0 };
         let module = parser.parse().unwrap();
 
@@ -1841,7 +1819,7 @@ mod tests {
         match &d.selectors[3] {
             Selector::Field(id) => {
                 assert_eq!(id.text, "y");
-                assert_eq!(id.span, Span::new(34, 35));
+                assert_eq!(id.span, Span::new(35, 37));
             }
             other => panic!("expected Field selector, got {other:?}"),
         }
@@ -1849,24 +1827,17 @@ mod tests {
 
     #[test]
     fn parse_tilde_expression() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
             // ~TRUE
-            Token::new(TokenKind::Tilde, Span::new(25, 26)),
-            Token::new(TokenKind::True, Span::new(26, 29)),
-
-            Token::new(TokenKind::SemiColon, Span::new(29, 30)),
-            Token::new(TokenKind::End, Span::new(30, 33)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(34, 40)),
-            Token::new(TokenKind::Dot, Span::new(40, 41)),
-            Token::new(TokenKind::Eof, Span::new(41, 41))
+            tok!(Tilde 25, 26),
+            tok!(True 26, 29),
+            tok!(Semi 29, 30)
         ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
 
         let mut parser = super::Parser { tokens: &tokens, pos: 0 };
         let module = parser.parse().unwrap();
@@ -1887,25 +1858,18 @@ mod tests {
 
     #[test]
     fn parse_parenthesis_expression() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
             // (TRUE)
-            Token::new(TokenKind::LParen, Span::new(25, 26)),
-            Token::new(TokenKind::True, Span::new(26, 29)),
-            Token::new(TokenKind::RParen, Span::new(29, 30)),
-
-            Token::new(TokenKind::SemiColon, Span::new(30, 31)),
-            Token::new(TokenKind::End, Span::new(31, 34)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(35, 41)),
-            Token::new(TokenKind::Dot, Span::new(41, 42)),
-            Token::new(TokenKind::Eof, Span::new(42, 42))
+            tok!(LParen 25, 26),
+            tok!(True 26, 29),
+            tok!(RParen 29, 30),
+            tok!(Semi 30, 31)
         ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
 
         let mut parser = super::Parser { tokens: &tokens, pos: 0 };
         let module = parser.parse().unwrap();
@@ -1921,26 +1885,18 @@ mod tests {
 
     #[test]
     fn parse_binary_term_expression() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
             // TRUE & FALSE
-            Token::new(TokenKind::True, Span::new(25, 28)),
-            Token::new(TokenKind::Ampersand, Span::new(28, 29)),
-            Token::new(TokenKind::False, Span::new(30, 34)),
-
-            Token::new(TokenKind::SemiColon, Span::new(34, 35)),
-            Token::new(TokenKind::End, Span::new(36, 39)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(40, 46)),
-            Token::new(TokenKind::Dot, Span::new(46, 47)),
-            Token::new(TokenKind::Eof, Span::new(47, 47))
+            tok!(True 25, 28),
+            tok!(Ampersand 28, 29),
+            tok!(False 29, 33),
+            tok!(Semi 33, 34)
         ];
 
+        let tokens = module_tokens("monkey", "monkey", body);
         let mut parser = super::Parser { tokens: &tokens, pos: 0 };
         let module = parser.parse().unwrap();
 
@@ -1964,26 +1920,18 @@ mod tests {
 
     #[test]
     fn parse_binary_simple_expression() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-
-            // TRUE & FALSE
-            Token::new(TokenKind::True, Span::new(25, 28)),
-            Token::new(TokenKind::Or, Span::new(28, 29)),
-            Token::new(TokenKind::False, Span::new(30, 34)),
-
-            Token::new(TokenKind::SemiColon, Span::new(34, 35)),
-            Token::new(TokenKind::End, Span::new(36, 39)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(40, 46)),
-            Token::new(TokenKind::Dot, Span::new(46, 47)),
-            Token::new(TokenKind::Eof, Span::new(47, 47))
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
+            // TRUE or FALSE
+            tok!(True 25, 28),
+            tok!(Or 28, 30),
+            tok!(False 30, 34),
+            tok!(Semi 34, 35)
         ];
 
+        let tokens = module_tokens("monkey", "monkey", body);
         let mut parser = super::Parser { tokens: &tokens, pos: 0 };
         let module = parser.parse().unwrap();
 
@@ -2007,25 +1955,18 @@ mod tests {
 
     #[test]
     fn parse_binary_relation_expression() {
-        let tokens = vec![
-            Token::new(TokenKind::Module, Span::new(0, 6)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(7, 13)),
-            Token::new(TokenKind::SemiColon, Span::new(13, 14)),
-            Token::new(TokenKind::Const, Span::new(14, 19)),
-            Token::new(TokenKind::Ident("Foo".to_string()), Span::new(20, 23)),
-            Token::new(TokenKind::Equal, Span::new(23, 24)),
-
+        let body = vec![
+            tok!(Const 14, 19),
+            tok!(Ident "Foo", 20, 23),
+            tok!(Equal 23, 24),
             // TRUE # FALSE
-            Token::new(TokenKind::True, Span::new(25, 28)),
-            Token::new(TokenKind::NotEqual, Span::new(28, 29)),
-            Token::new(TokenKind::False, Span::new(30, 34)),
-
-            Token::new(TokenKind::SemiColon, Span::new(34, 35)),
-            Token::new(TokenKind::End, Span::new(36, 39)),
-            Token::new(TokenKind::Ident("monkey".to_string()), Span::new(40, 46)),
-            Token::new(TokenKind::Dot, Span::new(46, 47)),
-            Token::new(TokenKind::Eof, Span::new(47, 47))
+            tok!(True 25, 28),
+            tok!(Neq 28, 29),
+            tok!(False 29, 33),
+            tok!(Semi 33, 34)
         ];
+
+        let tokens = module_tokens("monkey", "monkey", body);
 
         let mut parser = super::Parser { tokens: &tokens, pos: 0 };
         let module = parser.parse().unwrap();
