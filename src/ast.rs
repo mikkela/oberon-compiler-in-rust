@@ -195,6 +195,7 @@ impl Spanned for Parameter {
 pub enum Statement {
     Assign { target: Designator, value: Expression, span: Span },
     Call   { callee: Designator, span: Span },
+    If     { cond: Expression, then_branch: Vec<Statement>, elsif_branches: Vec<ElsIf>, else_branch: Option<Vec<Statement>>, span: Span },
 }
 
 impl Spanned for Statement {
@@ -202,8 +203,20 @@ impl Spanned for Statement {
         match self {
             Statement::Assign { span, .. } => *span,
             Statement::Call   { span, .. } => *span,
+            Statement::If     { span, .. } => *span,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ElsIf {
+    pub cond: Expression,
+    pub alternate_branch: Vec<Statement>,
+    pub span: Span,
+}
+
+impl Spanned for ElsIf {
+    fn span(&self) -> Span { self.span }
 }
 
 // -------------------------

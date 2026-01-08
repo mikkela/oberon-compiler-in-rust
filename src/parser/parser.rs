@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOperation, Designator, FPSection, FieldList, FormalParameters, FormalType, Spanned, Statement, UnaryOperation};
+use crate::ast::{BinaryOperation, Designator, ElsIf, FPSection, FieldList, FormalParameters, FormalType, Spanned, Statement, UnaryOperation};
 use crate::ast::{
     Declaration, Element, Expression, Identifier, IdentifierDef, Import, Module,
     QualifiedIdentifier, Type,
@@ -149,12 +149,12 @@ impl<'a> Parser<'a> {
 
     fn list_until<T>(
         &mut self,
-        until: TokenKind,
+        until: Vec<TokenKind>,
         separator: TokenKind,
         mut item: impl FnMut(&mut Self) -> Result<T, ParserError>,
     ) -> Result<Vec<T>, ParserError> {
         let mut items = vec![];
-        while !self.at(&until) {
+        while !until.contains(&self.peek()?.kind) {
             if !items.is_empty() {
                 self.expect(separator.clone())?;
             }
@@ -350,7 +350,7 @@ impl<'a> Parser<'a> {
 
                 // ARRAY len {, len} OF type
                 let lengths =
-                    self.list_until(TokenKind::Of, TokenKind::Comma, |p|p.parse_expression())?;
+                    self.list_until(vec![TokenKind::Of], TokenKind::Comma, |p|p.parse_expression())?;
                 self.expect(TokenKind::Of)?;
                 let element = self.parse_type()?;
                 let end = element.span().end;
@@ -373,7 +373,7 @@ impl<'a> Parser<'a> {
                     } else {
                         None
                     };
-                let field_lists = self.list_until(TokenKind::End, TokenKind::SemiColon,
+                let field_lists = self.list_until(vec![TokenKind::End], TokenKind::SemiColon,
                                                       |p| p.parse_field_list())?;
                 let end = self.expect(TokenKind::End)?.span.end;
 
@@ -408,7 +408,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_field_list(&mut self) -> Result<FieldList, ParserError> {
-        let fields = self.list_until(TokenKind::Colon, TokenKind::Comma,
+        let fields = self.list_until(vec![TokenKind::Colon], TokenKind::Comma,
                                          |p| p.parse_identifier_def())?;
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_type()?;
@@ -438,7 +438,7 @@ impl<'a> Parser<'a> {
         if self.at(&TokenKind::LParen) {
             let start = self.expect(TokenKind::LParen)?.span.start;
             let sections = if !self.at(&TokenKind::RParen) {
-                self.list_until(TokenKind::RParen, TokenKind::SemiColon, |p| p.parse_fp_section())?
+                self.list_until(vec![TokenKind::RParen], TokenKind::SemiColon, |p| p.parse_fp_section())?
             } else { vec![]};
             let end = self.expect(TokenKind::RParen)?.span.end;
 
@@ -468,7 +468,7 @@ impl<'a> Parser<'a> {
         let start = self.peek()?.span.start;
         let by_ref = self.at(&TokenKind::Var);
         if by_ref { self.bump()?; }
-        let names = self.list_until(TokenKind::Colon, TokenKind::Comma,
+        let names = self.list_until(vec![TokenKind::Colon], TokenKind::Comma,
                                     |p| p.expect_ident())?;
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_formal_type()?;
@@ -506,7 +506,8 @@ impl<'a> Parser<'a> {
     // Statements
     // -------------------------
     fn parse_statements(&mut self) -> Result<Vec<Statement>, ParserError> {
-        let result = self.list_until(TokenKind::End, TokenKind::SemiColon, |p| p.parse_statement())?;
+        let result = self.list_until(
+            vec![TokenKind::End, TokenKind::Else, TokenKind::Elsif], TokenKind::SemiColon, |p| p.parse_statement())?;
         Ok(result)
     }
 
@@ -530,8 +531,51 @@ impl<'a> Parser<'a> {
 
             }
 
+            TokenKind::If => {
+                let start = self.expect(TokenKind::If)?.span.start;
+                let cond = self.parse_expression()?;
+                self.expect(TokenKind::Then)?;
+                let then_branch = self.parse_statements()?;
+                let elsif_branches = self.parse_elsif_statements(TokenKind::Then)?;
+                let else_branch = if self.at(&TokenKind::Else) {
+                    self.bump()?;
+                    Some(self.parse_statements()?)
+                } else {
+                    None
+                };
+
+                let end = self.expect(TokenKind::End)?.span.end;
+                Ok(Statement::If {
+                    cond,
+                    then_branch,
+                    elsif_branches,
+                    else_branch,
+                    span: Span { start, end },
+                })
+            }
             _ => Err(ParserError::UnexpectedToken { token: peek }),
         }
+    }
+
+    fn parse_elsif_statements(&mut self, consequence_token: TokenKind) -> Result<Vec<ElsIf>, ParserError> {
+        let mut result = vec![];
+        let mut peek = self.peek()?.clone();
+        let mut start = peek.span.start;
+        while peek.kind == TokenKind::Elsif {
+            self.bump()?;
+            let cond = self.parse_expression()?;
+            self.expect(consequence_token.clone())?;
+            let alternate_branch = self.parse_statements()?;
+            peek = self.peek()?.clone();
+            let end = peek.span.start - 1;
+            result.push(ElsIf {
+                cond,
+                alternate_branch,
+                span: Span { start, end},
+            });
+            start = end + 1;
+        }
+        Ok(result)
     }
 
     // -------------------------
@@ -688,7 +732,7 @@ impl<'a> Parser<'a> {
     fn parse_set_literal(&mut self) -> Result<Expression, ParserError> {
         let lcurly = self.expect(TokenKind::LCurly)?;
 
-        let elements = self.list_until(TokenKind::RCurly, TokenKind::Comma, |p| p.parse_element())?;
+        let elements = self.list_until(vec![TokenKind::RCurly], TokenKind::Comma, |p| p.parse_element())?;
         let rcurly = self.expect(TokenKind::RCurly)?;
 
         Ok(Expression::Set {
@@ -766,7 +810,7 @@ impl<'a> Parser<'a> {
         self.bump()?; // '['
 
         // (Oberon) index kan være flere udtryk adskilt af comma: a[i, j]
-        let exprs = self.list_until(TokenKind::RSquare, TokenKind::Comma,
+        let exprs = self.list_until(vec![TokenKind::RSquare], TokenKind::Comma,
                                         |p| p.parse_expression())?;
         self.expect(TokenKind::RSquare)?;
         // Hvis du vil have span på Index, er det bedst at gemme span i Selector::Index.
@@ -859,7 +903,7 @@ impl<'a> Parser<'a> {
     fn parse_call_args(&mut self) -> Result<Option<(Vec<Expression>, Span)>, ParserError> {
         if !self.at(&TokenKind::LParen) { return Ok(None); }
         let lpar = self.bump()?;
-        let args = self.list_until(TokenKind::RParen, TokenKind::Comma, |p| p.parse_expression())?;
+        let args = self.list_until(vec![TokenKind::RParen], TokenKind::Comma, |p| p.parse_expression())?;
         let rpar = self.expect(TokenKind::RParen)?;
         Ok(Some((args, Span::new(lpar.span.start, rpar.span.end))))
     }
@@ -937,8 +981,12 @@ mod tests {
     (Ampersand $a:expr, $b:expr) => { t(TokenKind::Ampersand, $a, $b) };
     (Or $a:expr, $b:expr) => { t(TokenKind::Or, $a, $b) };
     (Neq $a:expr, $b:expr) => { t(TokenKind::NotEqual, $a, $b) };
-    }
 
+    (If $a:expr, $b:expr) => { t(TokenKind::If, $a, $b) };
+    (Then $a:expr, $b:expr) => { t(TokenKind::Then, $a, $b) };
+    (Else $a:expr, $b:expr) => { t(TokenKind::Else, $a, $b) };
+    (Elsif $a:expr, $b:expr) => { t(TokenKind::Elsif, $a, $b) };
+    }
     // -------------------------
     // Module wrapper + parse helper
     // -------------------------
@@ -2141,6 +2189,123 @@ mod tests {
             );
             assert_eq!(target.selectors.len(), 0);
             assert_eq!(value, Expression::Int { value: 1, span: Span::new(23, 24) });
+        }
+
+        #[test]
+        fn parse_if_then_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(If 20, 22),
+                tok!(True 23, 27),
+                tok!(Then 27, 31),
+                tok!(Ident "a", 32, 33),
+                tok!(End 34, 37),
+
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::If { cond, then_branch, elsif_branches, else_branch, .. } = stmt else {
+                panic!("expected If Statement");
+            };
+            assert_eq!(cond, Expression::Bool { value: true, span: Span::new(23, 27) });
+            assert_eq!(then_branch.len(), 1);
+            assert!(elsif_branches.is_empty());
+            assert!(else_branch.is_none());
+        }
+
+        #[test]
+        fn parse_if_then_else_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(If 20, 22),
+                tok!(True 23, 27),
+                tok!(Then 27, 31),
+                tok!(Ident "a", 32, 33),
+                tok!(Else 33, 36),
+                tok!(Ident "b", 37, 38),
+                tok!(End 39, 41),
+
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::If { cond, then_branch, elsif_branches, else_branch, .. } = stmt else {
+                panic!("expected If Statement");
+            };
+            assert_eq!(cond, Expression::Bool { value: true, span: Span::new(23, 27) });
+            assert_eq!(then_branch.len(), 1);
+            assert!(elsif_branches.is_empty());
+            assert!(else_branch.is_some());
+            assert_eq!(else_branch.unwrap().len(), 1);
+        }
+
+        #[test]
+        fn parse_if_then_elsif_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(If 20, 22),
+                tok!(True 23, 27),
+                tok!(Then 27, 31),
+                tok!(Ident "a", 32, 33),
+                tok!(Elsif 33, 36),
+                tok!(False 37, 41),
+                tok!(Then 41, 45),
+                tok!(Ident "b", 46, 47),
+                tok!(End 48, 50),
+
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::If { cond, then_branch, elsif_branches, else_branch, .. } = stmt else {
+                panic!("expected If Statement");
+            };
+            assert_eq!(cond, Expression::Bool { value: true, span: Span::new(23, 27) });
+            assert_eq!(then_branch.len(), 1);
+            assert_eq!(elsif_branches.len(), 1);
+            assert!(else_branch.is_none());
+        }
+
+        #[test]
+        fn parse_if_then_elsif_else_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(If 20, 22),
+                tok!(True 23, 27),
+                tok!(Then 27, 31),
+                tok!(Ident "a", 32, 33),
+                tok!(Elsif 33, 36),
+                tok!(False 37, 41),
+                tok!(Then 41, 45),
+                tok!(Ident "b", 46, 47),
+                tok!(Elsif 47, 50),
+                tok!(True 51, 55),
+                tok!(Then 55, 59),
+                tok!(Ident "c", 60, 61),
+                tok!(Else 61, 64),
+                tok!(Ident "d", 65, 66),
+                tok!(End 48, 50),
+
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::If { cond, then_branch, elsif_branches, else_branch, .. } = stmt else {
+                panic!("expected If Statement");
+            };
+            assert_eq!(cond, Expression::Bool { value: true, span: Span::new(23, 27) });
+            assert_eq!(then_branch.len(), 1);
+            assert_eq!(elsif_branches.len(), 2);
+            assert!(else_branch.is_some());
         }
     }
 }
