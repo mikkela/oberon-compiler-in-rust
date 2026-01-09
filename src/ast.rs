@@ -86,7 +86,7 @@ pub enum Declaration {
     Type  { ident: IdentifierDef, ty: Type, span: Span },
 
     // Keep placeholders (you can evolve them later)
-    Var   { ident: IdentifierDef, ty: QualifiedIdentifier, span: Span },
+    Var   { variables: Vec<Identifier>, ty: Type, span: Span },
     Proc  { ident: IdentifierDef, params: Vec<Parameter>, ret: Option<QualifiedIdentifier>, body: Vec<Statement>, span: Span },
 }
 

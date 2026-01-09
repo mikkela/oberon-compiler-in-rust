@@ -44,10 +44,6 @@ impl<'a> Parser<'a> {
         self.peek_opt().ok_or(ParserError::UnexpectedEof)
     }
 
-    fn peek_kind(&self) -> Result<&TokenKind, ParserError> {
-        Ok(&self.peek()?.kind)
-    }
-
     fn at(&self, k: &TokenKind) -> bool {
         self.peek_opt().map(|t| &t.kind == k).unwrap_or(false)
     }
@@ -208,34 +204,6 @@ impl<'a> Parser<'a> {
         Ok(Self::create_identifier_def(name, star_tok))
     }
 
-    fn parse_named_decls<T>(
-        &mut self,
-        header: TokenKind,
-        mut parse_rhs: impl FnMut(&mut Self) -> Result<T, ParserError>,
-        mut build: impl FnMut(IdentifierDef, T, Span) -> Declaration,
-    ) -> Result<Vec<Declaration>, ParserError> {
-        if !self.at(&header) {
-            return Ok(vec![]);
-        }
-
-        self.bump()?; // header
-
-        let mut out = vec![];
-        while matches!(self.peek_kind()?, TokenKind::Ident(_)) {
-            let name = self.expect_ident()?;
-            let star_tok = self.maybe_star()?;
-            self.expect(TokenKind::Equal)?;
-
-            let rhs = parse_rhs(self)?;
-            let semi = self.expect(TokenKind::SemiColon)?;
-
-            let decl_span = Self::span(&name, &semi);
-            let ident = Self::create_identifier_def(name, star_tok);
-            out.push(build(ident, rhs, decl_span));
-        }
-        Ok(out)
-    }
-
     // -------------------------
     // Top-level
     // -------------------------
@@ -273,6 +241,7 @@ impl<'a> Parser<'a> {
         let mut declarations = vec![];
         declarations.extend(self.parse_const_declarations()?);
         declarations.extend(self.parse_type_declarations()?);
+        declarations.extend(self.parse_var_declarations()?);
         Ok(declarations)
     }
 
@@ -322,25 +291,62 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_const_declarations(&mut self) -> Result<Vec<Declaration>, ParserError> {
-        self.parse_named_decls(
-            TokenKind::Const,
-            |p| p.parse_expression(),
-            |ident, expression, span| Declaration::Const {
-                ident,
-                value: expression,
-                span,
-            },
-        )
+        if !self.at(&TokenKind::Const) {
+            return Ok(vec![]);
+        }
+
+        self.bump()?;
+
+
+        Ok(self.list_until(vec![TokenKind::End], TokenKind::SemiColon, |p| p.parse_const_declaration())?)
+    }
+
+    fn parse_const_declaration(&mut self) -> Result<Declaration, ParserError>
+    {
+        let ident = self.parse_identifier_def()?;
+        self.expect(TokenKind::Equal)?;
+        let value = self.parse_expression()?;
+        let span = Self::span(&ident, &value);
+        Ok(Declaration::Const { ident, value, span })
     }
 
     fn parse_type_declarations(&mut self) -> Result<Vec<Declaration>, ParserError> {
-        self.parse_named_decls(
-            TokenKind::Type,
-            |p| p.parse_type(),
-            |ident, ty, span| Declaration::Type { ident, ty, span },
-        )
+        if !self.at(&TokenKind::Type) {
+            return Ok(vec![]);
+        }
+
+        self.bump()?;
+
+
+        Ok(self.list_until(vec![TokenKind::End], TokenKind::SemiColon, |p| p.parse_type_declaration())?)
     }
 
+    fn parse_type_declaration(&mut self) -> Result<Declaration, ParserError>
+    {
+        let ident = self.parse_identifier_def()?;
+        self.expect(TokenKind::Equal)?;
+        let ty = self.parse_type()?;
+        let span = Self::span(&ident, &ty);
+        Ok(Declaration::Type { ident, ty, span })
+    }
+
+    fn parse_var_declarations(&mut self) -> Result<Vec<Declaration>, ParserError> {
+        if !self.at(&TokenKind::Var) {
+            return Ok(vec![]);
+        }
+
+        self.bump()?; // header
+        Ok(self.list_until(vec![TokenKind::End], TokenKind::SemiColon, |p| p.parse_var_declaration())?)
+    }
+
+    fn parse_var_declaration(&mut self) -> Result<Declaration, ParserError> {
+        let start = self.peek()?.clone();
+        let variables = self.list_until(vec![TokenKind::Colon], TokenKind::Comma, |p| p.expect_ident())?;
+        self.expect(TokenKind::Colon)?;
+        let ty = self.parse_type()?;
+        let span = Self::span(&start, &ty);
+        Ok(Declaration::Var { variables, ty, span })
+    }
     // -------------------------
     // Types
     // -------------------------
@@ -1145,7 +1151,6 @@ mod tests {
                 tok!(Equal 23, 24),
             ];
             body.extend(expr_tokens);
-            body.push(tok!(Semi 999, 1000));
 
             let tokens = module_tokens("M", "M", body);
             let m = parse_module(tokens);
@@ -1239,7 +1244,7 @@ mod tests {
     }
 
     // ============================================================
-    // declarations: const/type sections
+    // declarations: const/type/var sections
     // ============================================================
     mod decls {
         use super::h::*;
@@ -1260,7 +1265,6 @@ mod tests {
                 tok!(Ident "Foo", 20, 23),
                 tok!(Equal 23, 24),
                 tok!(Int 123, 24, 27),
-                tok!(Semi 27, 28),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1288,7 +1292,6 @@ mod tests {
                 tok!(Star 32, 33),
                 tok!(Equal 33, 34),
                 tok!(Int 456, 34, 37),
-                tok!(Semi 37, 38),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1320,6 +1323,98 @@ mod tests {
             let module = parse_module(tokens);
             assert_eq!(module.declarations.len(), 0);
         }
+
+        #[test]
+        fn parse_empty_var() {
+            let body = vec![tok!(Var 14, 17)];
+            let tokens = module_tokens("monkey", "monkey", body);
+            let module = parse_module(tokens);
+            assert_eq!(module.declarations.len(), 0);
+        }
+
+        #[test]
+        fn parse_single_var() {
+            let body = vec![
+                tok!(Var 14, 19),
+                tok!(Ident "foo", 20, 23),
+                tok!(Colon  23, 24),
+                tok!(Ident "Bar", 24, 27),
+            ];
+
+            let tokens = module_tokens("monkey", "monkey", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.declarations.len(), 1);
+            let Declaration::Var { variables, ty, .. } = &module.declarations[0] else { panic!("Var"); };
+
+            assert_eq!(variables.len(), 1);
+            assert_eq!(variables[0].text, "foo");
+            let Type::Named { name, .. } = ty else { panic!("NamedType")};
+            assert_eq!(name.parts.len(), 1);
+            assert_eq!(name.parts[0].text, "Bar");
+        }
+
+        #[test]
+        fn parse_single_var_with_multiple_variables() {
+            let body = vec![
+                tok!(Var 14, 19),
+                tok!(Ident "foo", 20, 23),
+                tok!(Comma 23, 24),
+                tok!(Ident "bar", 25, 28),
+                tok!(Colon  29, 30),
+                tok!(Ident "Baz", 31, 34),
+            ];
+
+            let tokens = module_tokens("monkey", "monkey", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.declarations.len(), 1);
+            let Declaration::Var { variables, ty, .. } = &module.declarations[0] else { panic!("Var"); };
+
+            assert_eq!(variables.len(), 2);
+            assert_eq!(variables[0].text, "foo");
+            assert_eq!(variables[1].text, "bar");
+            let Type::Named { name, .. } = ty else { panic!("NamedType")};
+            assert_eq!(name.parts.len(), 1);
+            assert_eq!(name.parts[0].text, "Baz");
+        }
+
+        #[test]
+        fn parse_multiple_var() {
+            let body = vec![
+                tok!(Var 14, 19),
+                tok!(Ident "foo", 20, 23),
+                tok!(Comma 23, 24),
+                tok!(Ident "bar", 25, 28),
+                tok!(Colon  29, 30),
+                tok!(Ident "Baz", 31, 34),
+                tok!(Semi 34, 35),
+                tok!(Ident "x", 36, 37),
+                tok!(Colon   37, 38),
+                tok!(Ident "Fuz", 38, 41),
+            ];
+
+            let tokens = module_tokens("monkey", "monkey", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.declarations.len(), 2);
+            let Declaration::Var { variables, ty, .. } = &module.declarations[0] else { panic!("Var"); };
+
+            assert_eq!(variables.len(), 2);
+            assert_eq!(variables[0].text, "foo");
+            assert_eq!(variables[1].text, "bar");
+            let Type::Named { name, .. } = ty else { panic!("NamedType")};
+            assert_eq!(name.parts.len(), 1);
+            assert_eq!(name.parts[0].text, "Baz");
+
+            let Declaration::Var { variables, ty, .. } = &module.declarations[1] else { panic!("Var"); };
+
+            assert_eq!(variables.len(), 1);
+            assert_eq!(variables[0].text, "x");
+            let Type::Named { name, .. } = ty else { panic!("NamedType")};
+            assert_eq!(name.parts.len(), 1);
+            assert_eq!(name.parts[0].text, "Fuz");
+        }
     }
 
     // ============================================================
@@ -1339,7 +1434,6 @@ mod tests {
                 tok!(Ident "M", 24, 27),
                 tok!(Dot 27, 29),
                 tok!(Ident "B", 29, 30),
-                tok!(Semi 30, 31),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1371,7 +1465,6 @@ mod tests {
                 tok!(Int 3, 32, 33),
                 tok!(Of 33, 35),
                 tok!(Ident "T", 36, 39),
-                tok!(Semi 39, 40),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1423,7 +1516,6 @@ mod tests {
                 tok!(Colon 47, 48),
                 tok!(Ident "U", 49, 51),
                 tok!(End 51, 54),
-                tok!(Semi 54, 55),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1474,7 +1566,6 @@ mod tests {
                 tok!(Pointer 24, 31),
                 tok!(To 31, 32),
                 tok!(Ident "A", 32, 33),
-                tok!(Semi 54, 55),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1504,7 +1595,6 @@ mod tests {
                 tok!(Ident "Foo", 20, 23),
                 tok!(Equal 23, 24),
                 tok!(Procedure 24, 31),
-                tok!(Semi 31, 32),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1529,7 +1619,6 @@ mod tests {
                 tok!(Procedure 24, 31),
                 tok!(LParen 31, 32),
                 tok!(RParen 32, 33),
-                tok!(Semi 34, 35),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1559,7 +1648,6 @@ mod tests {
                 tok!(RParen 32, 33),
                 tok!(Colon 33, 34),
                 tok!(Ident "T", 35, 38),
-                tok!(Semi 38, 39),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1592,7 +1680,6 @@ mod tests {
                 tok!(Colon 33, 34),
                 tok!(Ident "T", 35, 38),
                 tok!(RParen 38, 39),
-                tok!(Semi 39, 40),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1626,7 +1713,6 @@ mod tests {
                 tok!(Colon 35, 36),
                 tok!(Ident "T", 37, 40),
                 tok!(RParen 40, 41),
-                tok!(Semi 41, 42),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1657,7 +1743,6 @@ mod tests {
                 tok!(Colon 37, 38),
                 tok!(Ident "T", 39, 40),
                 tok!(RParen 40, 41),
-                tok!(Semi 41, 42),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1689,7 +1774,6 @@ mod tests {
                 tok!(Colon 40, 41),
                 tok!(Ident "U", 42, 44),
                 tok!(RParen 44, 45),
-                tok!(Semi 45, 46),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1731,8 +1815,7 @@ mod tests {
                 tok!(Int 2, 28, 29),
                 tok!(DotDot 29, 31),
                 tok!(Int 3, 31, 32),
-                tok!(RCurly 32, 33),
-                tok!(Semi 33, 34),
+                tok!(RCurly 32, 33)
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1758,7 +1841,6 @@ mod tests {
                 tok!(Equal 23, 24),
                 tok!(Tilde 25, 26),
                 tok!(True 26, 29),
-                tok!(Semi 29, 30),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1780,8 +1862,7 @@ mod tests {
                 tok!(Equal 23, 24),
                 tok!(LParen 25, 26),
                 tok!(True 26, 29),
-                tok!(RParen 29, 30),
-                tok!(Semi 30, 31),
+                tok!(RParen 29, 30)
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1800,8 +1881,7 @@ mod tests {
                 tok!(Equal 23, 24),
                 tok!(True 25, 28),
                 tok!(Ampersand 28, 29),
-                tok!(False 29, 33),
-                tok!(Semi 33, 34),
+                tok!(False 29, 33)
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1823,8 +1903,7 @@ mod tests {
                 tok!(Equal 23, 24),
                 tok!(True 25, 28),
                 tok!(Or 28, 30),
-                tok!(False 30, 34),
-                tok!(Semi 34, 35),
+                tok!(False 30, 34)
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1846,8 +1925,7 @@ mod tests {
                 tok!(Equal 23, 24),
                 tok!(True 25, 28),
                 tok!(Neq 28, 29),
-                tok!(False 29, 33),
-                tok!(Semi 33, 34),
+                tok!(False 29, 33)
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1937,7 +2015,6 @@ mod tests {
                 tok!(LParen 26, 27),
                 tok!(Ident "T", 27, 28),
                 tok!(RParen 28, 29),
-                tok!(Semi 29, 30),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -1972,7 +2049,6 @@ mod tests {
                 tok!(Dot 28, 29),
                 tok!(Ident "T", 29, 30),
                 tok!(RParen 30, 31),
-                tok!(Semi 31, 32),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -2003,7 +2079,6 @@ mod tests {
                 tok!(LParen 26, 27),
                 tok!(Int 1, 27, 28),
                 tok!(RParen 28, 29),
-                tok!(Semi 29, 30),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -2037,7 +2112,6 @@ mod tests {
                 tok!(LParen 29, 30),
                 tok!(Int 1, 30, 31),
                 tok!(RParen 31, 32),
-                tok!(Semi 32, 33),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
@@ -2082,7 +2156,6 @@ mod tests {
                 tok!(Caret 32, 33),
                 tok!(Dot 33, 34),
                 tok!(Ident "y", 35, 37),
-                tok!(Semi 37, 38),
             ];
 
             let tokens = module_tokens("monkey", "monkey", body);
