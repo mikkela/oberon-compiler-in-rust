@@ -87,7 +87,7 @@ pub enum Declaration {
 
     // Keep placeholders (you can evolve them later)
     Var   { variables: Vec<Identifier>, ty: Type, span: Span },
-    Proc  { ident: IdentifierDef, params: Vec<Parameter>, ret: Option<QualifiedIdentifier>, body: Vec<Statement>, span: Span },
+    Procedure  { header: ProcedureHeader, body: ProcedureBody },
 }
 
 impl Spanned for Declaration {
@@ -96,7 +96,9 @@ impl Spanned for Declaration {
             Declaration::Const { span, .. } => *span,
             Declaration::Type  { span, .. } => *span,
             Declaration::Var   { span, .. } => *span,
-            Declaration::Proc  { span, .. } => *span,
+            Declaration::Procedure  { header, body } => {
+                Span::new(header.span.start, body.span.end)
+            }
         }
     }
 }
@@ -169,6 +171,28 @@ pub struct FormalParameters {
 impl Spanned for FormalParameters { fn span(&self) -> Span { self.span } }
 
 // -------------------------
+// Procedures
+// -------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcedureHeader {
+    pub name: IdentifierDef,
+    pub params: Option<FormalParameters>,
+    pub span: Span,
+}
+impl Spanned for ProcedureHeader { fn span(&self) -> Span { self.span } }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProcedureBody {
+    pub declarations: Vec<Declaration>,
+    pub stmts: Vec<Statement>,
+    pub ret: Option<Expression>,
+    pub span: Span,
+}
+
+impl Spanned for ProcedureBody { fn span(&self) -> Span { self.span } }
+
+// -------------------------
 // Statements
 // -------------------------
 
@@ -187,11 +211,11 @@ impl Spanned for Parameter {
 pub enum Statement {
     Assign { target: Designator, value: Expression, span: Span },
     Call   { callee: Designator, span: Span },
-    If     { cond: Expression, then_branch: Vec<Statement>, elsif_branches: Vec<ElsIf>, else_branch: Option<Vec<Statement>>, span: Span },
+    If     { cond: Expression, stmts: Vec<Statement>, elsif_branches: Vec<ElsIf>, else_branch: Option<Vec<Statement>>, span: Span },
     Case  { expr: Expression, branches: Vec<Case>, span: Span },
-    While  { cond: Expression, body: Vec<Statement>, elsif_branches: Vec<ElsIf>, span: Span },
-    Repeat { body: Vec<Statement>, cond: Expression, span: Span },
-    For    { var: Identifier, low: Expression, high: Expression, by: Option<Expression>, body: Vec<Statement>, span: Span },
+    While  { cond: Expression, stmts: Vec<Statement>, elsif_branches: Vec<ElsIf>, span: Span },
+    Repeat { stmts: Vec<Statement>, cond: Expression, span: Span },
+    For    { var: Identifier, low: Expression, high: Expression, by: Option<Expression>, stmts: Vec<Statement>, span: Span },
 }
 
 impl Spanned for Statement {

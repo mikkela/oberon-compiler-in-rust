@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOperation, Case, Designator, ElsIf, FPSection, FieldList, FormalParameters, FormalType, Label, LabelValue, Statement, UnaryOperation};
+use crate::ast::{BinaryOperation, Case, Designator, ElsIf, FPSection, FieldList, FormalParameters, FormalType, Label, LabelValue, ProcedureBody, ProcedureHeader, Statement, UnaryOperation};
 use crate::ast::{
     Declaration, Element, Expression, Identifier, IdentifierDef, Import, Module,
     QualifiedIdentifier, Type,
@@ -242,6 +242,7 @@ impl<'a> Parser<'a> {
         declarations.extend(self.parse_const_declarations()?);
         declarations.extend(self.parse_type_declarations()?);
         declarations.extend(self.parse_var_declarations()?);
+        declarations.extend(self.parse_procedure_declarations()?);
         Ok(declarations)
     }
 
@@ -346,6 +347,17 @@ impl<'a> Parser<'a> {
         let ty = self.parse_type()?;
         let span = Self::span(&start, &ty);
         Ok(Declaration::Var { variables, ty, span })
+    }
+
+    fn parse_procedure_declarations(&mut self) -> Result<Vec<Declaration>, ParserError> {
+        Ok(self.list_until(vec![TokenKind::End, TokenKind::Begin], TokenKind::SemiColon, |p| p.parse_procedure_declaration())?)
+    }
+
+    fn parse_procedure_declaration(&mut self) -> Result<Declaration, ParserError> {
+        let header = self.parse_procedure_header()?;
+        self.expect(TokenKind::SemiColon)?;
+        let body = self.parse_procedure_body()?;
+        Ok(Declaration::Procedure { header, body })
     }
     // -------------------------
     // Types
@@ -520,11 +532,51 @@ impl<'a> Parser<'a> {
     }
 
     // -------------------------
+    // Procedure
+    // -------------------------
+    fn parse_procedure_header(&mut self) -> Result<ProcedureHeader, ParserError> {
+        let procedure = self.expect(TokenKind::Procedure)?;
+        let name = self.parse_identifier_def()?;
+        let params = self.parse_formal_parameters()?;
+        let span = Self::span(&procedure, self.peek()?);
+        Ok(ProcedureHeader{
+            name,
+            params,
+            span
+        })
+
+    }
+
+    fn parse_procedure_body(&mut self) -> Result<ProcedureBody, ParserError> {
+        let start = self.peek()?.clone();
+        let declarations = self.parse_declaration_sequence()?;
+        let stmts =
+            if self.at(&TokenKind::Begin) {
+                self.bump()?;
+                self.parse_statements()?
+            } else { vec![] };
+        let ret =
+            if self.at(&TokenKind::Return) {
+                self.bump()?;
+                Some(self.parse_expression()?)
+            } else { None };
+
+        let end = self.expect(TokenKind::End)?;
+        Ok(ProcedureBody{
+            declarations,
+            stmts,
+            ret,
+            span: Self::span(&start, &end),
+        })
+    }
+
+    // -------------------------
     // Statements
     // -------------------------
+
     fn parse_statements(&mut self) -> Result<Vec<Statement>, ParserError> {
         let result = self.list_until(
-            vec![TokenKind::End, TokenKind::Else, TokenKind::Elsif, TokenKind::Pipe, TokenKind::Until],
+            vec![TokenKind::End, TokenKind::Else, TokenKind::Elsif, TokenKind::Pipe, TokenKind::Until, TokenKind::Return],
             TokenKind::SemiColon, |p| p.parse_statement())?;
         Ok(result)
     }
@@ -552,7 +604,7 @@ impl<'a> Parser<'a> {
                 let _if = self.expect(TokenKind::If)?;
                 let cond = self.parse_expression()?;
                 self.expect(TokenKind::Then)?;
-                let then_branch = self.parse_statements()?;
+                let stmts = self.parse_statements()?;
                 let elsif_branches = self.parse_elsif_statements(TokenKind::Then)?;
                 let else_branch = if self.at(&TokenKind::Else) {
                     self.bump()?;
@@ -564,7 +616,7 @@ impl<'a> Parser<'a> {
                 let end = self.expect(TokenKind::End)?;
                 Ok(Statement::If {
                     cond,
-                    then_branch,
+                    stmts,
                     elsif_branches,
                     else_branch,
                     span: Self::span(&_if, &end),
@@ -584,12 +636,12 @@ impl<'a> Parser<'a> {
                 let _wh = self.expect(TokenKind::While)?;
                 let cond = self.parse_expression()?;
                 self.expect(TokenKind::Do)?;
-                let body = self.parse_statements()?;
+                let stmts = self.parse_statements()?;
                 let elsif_branches = self.parse_elsif_statements(TokenKind::Do)?;
                 let end = self.expect(TokenKind::End)?;
                 Ok(Statement::While {
                     cond,
-                    body,
+                    stmts,
                     elsif_branches,
                     span: Self::span(&_wh, &end),
                 })
@@ -597,11 +649,11 @@ impl<'a> Parser<'a> {
 
             TokenKind::Repeat => {
                 let repeat = self.expect(TokenKind::Repeat)?;
-                let body = self.parse_statements()?;
+                let stmts = self.parse_statements()?;
                 self.expect(TokenKind::Until)?;
                 let cond = self.parse_expression()?;
                 let end = self.peek()?;
-                Ok(Statement::Repeat { body, cond, span: Self::span(&repeat, end) })
+                Ok(Statement::Repeat { stmts, cond, span: Self::span(&repeat, end) })
             }
 
             TokenKind::For => {
@@ -616,9 +668,9 @@ impl<'a> Parser<'a> {
                     Some(self.parse_expression()?)
                 } else { None };
                 self.expect(TokenKind::Do)?;
-                let body = self.parse_statements()?;
+                let stmts = self.parse_statements()?;
                 let end = self.expect(TokenKind::End)?;
-                Ok(Statement::For { var, low, high, by, body, span: Self::span(&_fo, &end) })
+                Ok(Statement::For { var, low, high, by, stmts, span: Self::span(&_fo, &end) })
             }
             _ => Err(ParserError::UnexpectedToken { token: peek }),
         }
@@ -768,7 +820,6 @@ impl<'a> Parser<'a> {
             Ok(expr)
         }
     }
-
 
     fn parse_term(&mut self) -> Result<Expression, ParserError> {
         let mut expr = self.parse_factor()?;
@@ -1115,6 +1166,7 @@ mod tests {
             (For $a:expr, $b:expr) => { $crate::lexer::Token::new($crate::lexer::TokenKind::For, $crate::span::Span::new($a, $b)) };
             (To $a:expr, $b:expr) => { $crate::lexer::Token::new($crate::lexer::TokenKind::To, $crate::span::Span::new($a, $b)) };
             (By $a:expr, $b:expr) => { $crate::lexer::Token::new($crate::lexer::TokenKind::By, $crate::span::Span::new($a, $b)) };
+            (Return $a:expr, $b:expr) => { $crate::lexer::Token::new($crate::lexer::TokenKind::Return, $crate::span::Span::new($a, $b)) };
         }
         pub(crate) use tok;
 
@@ -1794,6 +1846,128 @@ mod tests {
     }
 
     // ============================================================
+    // procedures with or without bodies and return
+    // ============================================================
+    mod procedures {
+        use super::h::*;
+        use super::*;
+
+        #[test]
+        fn parse_procedure_with_body_and_return_type() {
+            let body = vec![
+                tok!(Procedure 14, 23),
+                tok!(Ident "Foo", 24, 27),
+                tok!(LParen 27, 28),
+                tok!(Ident "a", 28, 29),
+                tok!(Comma 29, 30),
+                tok!(Ident "b", 30, 31),
+                tok!(Colon 31, 32),
+                tok!(Ident "T", 33, 36),
+                tok!(RParen 36, 37),
+                tok!(Colon 37, 38),
+                tok!(Ident "U", 39, 41),
+                tok!(Semi 41, 42),
+                tok!(Begin 42, 46),
+                tok!(Ident "c", 46, 47),
+                tok!(Assign 47, 48),
+                tok!(Ident "a", 48, 49),
+                tok!(Star 49, 50),
+                tok!(Ident "b", 50, 51),
+                tok!(Return 51, 56),
+                tok!(Ident "c", 56, 57),
+                tok!(End 57, 60),
+            ];
+
+            let tokens = module_tokens("monkey", "monkey", body);
+            let module = parse_module(tokens);
+
+            let Declaration::Procedure {header, body} = &module.declarations[0] else { panic!("Procedure"); };
+            assert_eq!(header.name.ident.text, "Foo");
+            let params = &header.params.as_ref().unwrap();
+            assert_eq!(params.sections.len(), 1);
+            assert_eq!(params.sections[0].names.len(), 2);
+            assert_eq!(params.sections[0].names[0].text, "a");
+            assert_eq!(params.sections[0].names[1].text, "b");
+            assert_eq!(params.sections[0].ty.base.parts[0].text, "T");
+            assert_eq!(params.return_type.as_ref().unwrap().parts[0].text, "U");
+
+            assert_eq!(body.stmts.len(),1);
+            assert!(body.ret.is_some());
+        }
+
+        #[test]
+        fn parse_procedure_with_body() {
+            let body = vec![
+                tok!(Procedure 14, 23),
+                tok!(Ident "Foo", 24, 27),
+                tok!(LParen 27, 28),
+                tok!(Ident "a", 28, 29),
+                tok!(Comma 29, 30),
+                tok!(Ident "b", 30, 31),
+                tok!(Colon 31, 32),
+                tok!(Ident "T", 33, 36),
+                tok!(RParen 36, 37),
+                tok!(Semi 41, 42),
+                tok!(Begin 42, 46),
+                tok!(Ident "c", 46, 47),
+                tok!(Assign 47, 48),
+                tok!(Ident "a", 48, 49),
+                tok!(Star 49, 50),
+                tok!(Ident "b", 50, 51),
+                tok!(End 57, 60),
+            ];
+
+            let tokens = module_tokens("monkey", "monkey", body);
+            let module = parse_module(tokens);
+
+            let Declaration::Procedure {header, body} = &module.declarations[0] else { panic!("Procedure"); };
+            assert_eq!(header.name.ident.text, "Foo");
+            let params = &header.params.as_ref().unwrap();
+            assert_eq!(params.sections.len(), 1);
+            assert_eq!(params.sections[0].names.len(), 2);
+            assert_eq!(params.sections[0].names[0].text, "a");
+            assert_eq!(params.sections[0].names[1].text, "b");
+            assert_eq!(params.sections[0].ty.base.parts[0].text, "T");
+            assert!(params.return_type.is_none());
+
+            assert_eq!(body.stmts.len(),1);
+            assert!(body.ret.is_none());
+        }
+
+        #[test]
+        fn parse_procedure_without_body() {
+            let body = vec![
+                tok!(Procedure 14, 23),
+                tok!(Ident "Foo", 24, 27),
+                tok!(LParen 27, 28),
+                tok!(Ident "a", 28, 29),
+                tok!(Comma 29, 30),
+                tok!(Ident "b", 30, 31),
+                tok!(Colon 31, 32),
+                tok!(Ident "T", 33, 36),
+                tok!(RParen 36, 37),
+                tok!(Semi 41, 42),
+                tok!(End 57, 60),
+            ];
+
+            let tokens = module_tokens("monkey", "monkey", body);
+            let module = parse_module(tokens);
+
+            let Declaration::Procedure {header, body} = &module.declarations[0] else { panic!("Procedure"); };
+            assert_eq!(header.name.ident.text, "Foo");
+            let params = &header.params.as_ref().unwrap();
+            assert_eq!(params.sections.len(), 1);
+            assert_eq!(params.sections[0].names.len(), 2);
+            assert_eq!(params.sections[0].names[0].text, "a");
+            assert_eq!(params.sections[0].names[1].text, "b");
+            assert_eq!(params.sections[0].ty.base.parts[0].text, "T");
+            assert!(params.return_type.is_none());
+
+            assert_eq!(body.stmts.len(),0);
+            assert!(body.ret.is_none());
+        }
+    }
+    // ============================================================
     // expressions (precedence + unary + set + relations)
     // ============================================================
     mod expressions {
@@ -2322,14 +2496,14 @@ mod tests {
             let tokens = module_tokens("monkey", "monkey2", body);
             let module = parse_module(tokens);
 
-            let Statement::If { cond, then_branch, elsif_branches, else_branch, .. } =
+            let Statement::If { cond, stmts, elsif_branches, else_branch, .. } =
                 module.stmts[0].clone()
             else {
                 panic!("expected If");
             };
 
             assert_eq!(cond, Expression::Bool { value: true, span: Span::new(23, 27) });
-            assert_eq!(then_branch.len(), 1);
+            assert_eq!(stmts.len(), 1);
             assert!(elsif_branches.is_empty());
             assert!(else_branch.is_none());
         }
@@ -2466,11 +2640,11 @@ mod tests {
             let tokens = module_tokens("monkey", "monkey2", body);
             let module = parse_module(tokens);
 
-            let Statement::While { cond, body, elsif_branches, .. } = module.stmts[0].clone() else {
+            let Statement::While { cond, stmts, elsif_branches, .. } = module.stmts[0].clone() else {
                 panic!("While");
             };
             assert_eq!(cond, Expression::Bool { value: true, span: Span::new(23, 27) });
-            assert_eq!(body.len(), 1);
+            assert_eq!(stmts.len(), 1);
             assert!(elsif_branches.is_empty());
         }
 
@@ -2488,11 +2662,11 @@ mod tests {
             let tokens = module_tokens("monkey", "monkey2", body);
             let module = parse_module(tokens);
 
-            let Statement::Repeat { cond, body, .. } = module.stmts[0].clone() else {
+            let Statement::Repeat { cond, stmts, .. } = module.stmts[0].clone() else {
                 panic!("Repeat");
             };
             assert_eq!(cond, Expression::Bool { value: true, span: Span::new(35, 39) });
-            assert_eq!(body.len(), 2);
+            assert_eq!(stmts.len(), 2);
         }
 
         #[test]
@@ -2512,14 +2686,14 @@ mod tests {
             let tokens = module_tokens("monkey", "monkey2", body);
             let module = parse_module(tokens);
 
-            let Statement::For { var, low, high, by, body, .. } = module.stmts[0].clone() else {
+            let Statement::For { var, low, high, by, stmts, .. } = module.stmts[0].clone() else {
                 panic!("For");
             };
             assert_eq!(var.text, "i");
             assert_eq!(low, Expression::Int { value: 1, span: Span::new(25, 26) });
             assert_eq!(high, Expression::Int { value: 10, span: Span::new(29, 31) });
             assert!(by.is_none());
-            assert_eq!(body.len(), 1);
+            assert_eq!(stmts.len(), 1);
         }
 
         #[test]
