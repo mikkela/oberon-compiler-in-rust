@@ -1,10 +1,10 @@
-use crate::ast::{BinaryOperation, Case, Designator, ElsIf, FPSection, FieldList, FormalParameters, FormalType, Label, LabelValue, Spanned, Statement, UnaryOperation};
+use crate::ast::{BinaryOperation, Case, Designator, ElsIf, FPSection, FieldList, FormalParameters, FormalType, Label, LabelValue, Statement, UnaryOperation};
 use crate::ast::{
     Declaration, Element, Expression, Identifier, IdentifierDef, Import, Module,
     QualifiedIdentifier, Type,
 };
 use crate::lexer::{Token, TokenKind};
-use crate::span::Span;
+use crate::span::{Span, Spanned};
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq)]
@@ -22,6 +22,16 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    // -------------------------
+    // Span helper
+    // -------------------------
+    fn span<S: Spanned + ?Sized, E: Spanned + ?Sized>(start: &S, end: &E) -> Span {
+        let s = start.span();
+        let e = end.span();
+        Span { start: s.start, end: e.end }
+    }
+
+
     // -------------------------
     // Cursor helpers
     // -------------------------
@@ -169,7 +179,7 @@ impl<'a> Parser<'a> {
 
     fn create_identifier_def(name: Identifier, star_tok: Option<Token>) -> IdentifierDef {
         let span = match &star_tok {
-            Some(t) => Span::new(name.span.start, t.span.end),
+            Some(t) => Self::span(&name, t),
             None => name.span,
         };
 
@@ -219,7 +229,7 @@ impl<'a> Parser<'a> {
             let rhs = parse_rhs(self)?;
             let semi = self.expect(TokenKind::SemiColon)?;
 
-            let decl_span = Span::new(name.span.start, semi.span.end);
+            let decl_span = Self::span(&name, &semi);
             let ident = Self::create_identifier_def(name, star_tok);
             out.push(build(ident, rhs, decl_span));
         }
@@ -253,7 +263,7 @@ impl<'a> Parser<'a> {
             name: first_ident,
             import_list,
             stmts,
-            span: Span::new(begin.span.start, end.span.end),
+            span: Self::span(&begin, &end),
             end_name: second_ident,
             declarations: declaration_sequence,
         })
@@ -287,7 +297,7 @@ impl<'a> Parser<'a> {
                 self.bump()?; // :=
                 let module = self.expect_ident()?; // det rigtige modulnavn (Bar)
 
-                let span = Span::new(first.span.start, module.span.end);
+                let span = Self::span(&first, &module);
 
                 Import {
                     module,
@@ -346,24 +356,24 @@ impl<'a> Parser<'a> {
             }
 
             TokenKind::Array => {
-                let start = self.expect(TokenKind::Array)?.span.start;
+                let array = self.expect(TokenKind::Array)?;
 
                 // ARRAY len {, len} OF type
                 let lengths =
                     self.list_until(vec![TokenKind::Of], TokenKind::Comma, |p|p.parse_expression())?;
                 self.expect(TokenKind::Of)?;
                 let element = self.parse_type()?;
-                let end = element.span().end;
+                let span = Self::span(&array, &element);
 
                 Ok(Type::Array {
                     lengths,
                     element: Box::new(element),
-                    span: Span::new(start, end),
+                    span,
                 })
             }
 
             TokenKind::Record => {
-                let start = self.expect(TokenKind::Record)?.span.start;
+                let record = self.expect(TokenKind::Record)?;
                 let base =
                     if self.at(&TokenKind::LParen) {
                         self.bump()?;
@@ -375,32 +385,33 @@ impl<'a> Parser<'a> {
                     };
                 let field_lists = self.list_until(vec![TokenKind::End], TokenKind::SemiColon,
                                                       |p| p.parse_field_list())?;
-                let end = self.expect(TokenKind::End)?.span.end;
+                let end = self.expect(TokenKind::End)?;
 
                 Ok(Type::Record {
                     base,
                     field_lists,
-                    span: Span { start, end },
+                    span: Self::span(&record, &end),
                 })
             }
 
             TokenKind::Pointer => {
-                let start = self.expect(TokenKind::Pointer)?.span.start;
+                let pointer = self.expect(TokenKind::Pointer)?;
                 self.expect(TokenKind::To)?;
                 let pointee = self.parse_type()?;
-                let end = pointee.span().end;
-                Ok(Type::Pointer { pointee: Box::new(pointee), span: Span::new(start, end) })
+                let span = Self::span(&pointer, &pointee);
+                Ok(Type::Pointer { pointee: Box::new(pointee), span })
             }
 
             TokenKind::Procedure => {
-                let initial_span = self.expect(TokenKind::Procedure)?.span;
+                let procedure = self.expect(TokenKind::Procedure)?;
                 let params = self.parse_formal_parameters()?;
-                if params.is_some() {
-                    let end = params.clone().unwrap().span().end;
-                    Ok(Type::Procedure { params, span: Span::new(initial_span.start, end) })
-                } else {
-                    Ok(Type::Procedure { params: None, span: initial_span })
-                }
+
+                let span = match &params {
+                    Some(p) => Self::span(&procedure, p),
+                    None => procedure.span(),
+                };
+
+                Ok(Type::Procedure { params, span })
             }
 
             _ => Err(ParserError::UnexpectedToken { token: peek }),
@@ -436,27 +447,27 @@ impl<'a> Parser<'a> {
 
     fn parse_formal_parameters(&mut self) -> Result<Option<FormalParameters>, ParserError> {
         if self.at(&TokenKind::LParen) {
-            let start = self.expect(TokenKind::LParen)?.span.start;
+            let lparen = self.expect(TokenKind::LParen)?;
             let sections = if !self.at(&TokenKind::RParen) {
                 self.list_until(vec![TokenKind::RParen], TokenKind::SemiColon, |p| p.parse_fp_section())?
             } else { vec![]};
-            let end = self.expect(TokenKind::RParen)?.span.end;
+            let rparen = self.expect(TokenKind::RParen)?;
 
             if self.at(&TokenKind::Colon) {
-               self.bump()?;
+                self.bump()?;
                 let return_type = self.parse_qualified_identifier()?;
-                let end = return_type.span().end;
+                let span = Self::span(&lparen, &return_type);
                 Ok(Some(FormalParameters {
                     sections,
                     return_type: Some(return_type),
-                    span: Span { start, end},
+                    span,
                 }))
             }
             else {
                 Ok(Some(FormalParameters {
                     sections,
                     return_type: None,
-                    span: Span { start, end},
+                    span: Self::span(&lparen, &rparen)
                 }))
             }
         } else {
@@ -465,25 +476,25 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_fp_section(&mut self) -> Result<FPSection, ParserError> {
-        let start = self.peek()?.span.start;
+        let start = self.peek()?.clone();
         let by_ref = self.at(&TokenKind::Var);
         if by_ref { self.bump()?; }
         let names = self.list_until(vec![TokenKind::Colon], TokenKind::Comma,
                                     |p| p.expect_ident())?;
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_formal_type()?;
-        let end = ty.span().end;
+        let span = Self::span(&start, &ty);
         Ok(FPSection{
             by_ref,
             names,
             ty,
-            span: Span { start, end},
+            span,
         })
     }
 
     fn parse_formal_type(&mut self) -> Result<FormalType, ParserError> {
         let mut open_arrays = 0;
-        let start = self.peek()?.span.start;
+        let start = self.peek()?.clone();
         let base = loop {
             match self.peek()?.kind {
                 TokenKind::Array => {
@@ -494,11 +505,11 @@ impl<'a> Parser<'a> {
                 _ => break self.parse_qualified_identifier()?,
             }
         };
-        let end = base.span().end;
+        let span = Span{start: start.span().start, end: base.span().end};
         Ok(FormalType{
             open_arrays,
             base,
-            span: Span { start, end },
+            span
         })
     }
 
@@ -518,22 +529,21 @@ impl<'a> Parser<'a> {
         match peek.kind {
             TokenKind::Ident(_) => {
                 let first = self.expect_ident()?;
-                let start = first.span.start;
-                let designator = self.parse_designator_or_error(first)?;
-                let designator_end = designator.span().end;
+                let designator = self.parse_designator_or_error(first.clone())?;
                 if self.at(&TokenKind::Assign) {
                     self.bump()?;
                     let value = self.parse_expression()?;
-                    let value_end = value.span().end;
-                    Ok(Statement::Assign {target: designator, value, span: Span {start, end: value_end}})
+                    let span = Self::span(&first, &value);
+                    Ok(Statement::Assign {target: designator, value, span})
                 } else {
-                    Ok(Statement::Call { callee: designator, span: Span {start, end: designator_end} })
+                    let span = Self::span(&first, &designator);
+                    Ok(Statement::Call { callee: designator, span })
                 }
 
             }
 
             TokenKind::If => {
-                let start = self.expect(TokenKind::If)?.span.start;
+                let _if = self.expect(TokenKind::If)?;
                 let cond = self.parse_expression()?;
                 self.expect(TokenKind::Then)?;
                 let then_branch = self.parse_statements()?;
@@ -545,51 +555,51 @@ impl<'a> Parser<'a> {
                     None
                 };
 
-                let end = self.expect(TokenKind::End)?.span.end;
+                let end = self.expect(TokenKind::End)?;
                 Ok(Statement::If {
                     cond,
                     then_branch,
                     elsif_branches,
                     else_branch,
-                    span: Span { start, end },
+                    span: Self::span(&_if, &end),
                 })
             }
 
             TokenKind::Case => {
-                let start = self.expect(TokenKind::Case)?.span.start;
+                let case = self.expect(TokenKind::Case)?;
                 let expr = self.parse_expression()?;
                 self.expect(TokenKind::Of)?;
                 let branches = self.list_until(vec![TokenKind::End], TokenKind::Pipe, |p| p.parse_case())?;
-                let end = self.expect(TokenKind::End)?.span.end;
-                Ok(Statement::Case { expr, branches, span: Span { start, end } })
+                let end = self.expect(TokenKind::End)?;
+                Ok(Statement::Case { expr, branches, span: Self::span(&case, &end), })
             }
 
             TokenKind::While => {
-                let start = self.expect(TokenKind::While)?.span.start;
+                let _wh = self.expect(TokenKind::While)?;
                 let cond = self.parse_expression()?;
                 self.expect(TokenKind::Do)?;
                 let body = self.parse_statements()?;
                 let elsif_branches = self.parse_elsif_statements(TokenKind::Do)?;
-                let end = self.expect(TokenKind::End)?.span.end;
+                let end = self.expect(TokenKind::End)?;
                 Ok(Statement::While {
                     cond,
                     body,
                     elsif_branches,
-                    span: Span { start, end},
+                    span: Self::span(&_wh, &end),
                 })
             }
 
             TokenKind::Repeat => {
-                let start = self.expect(TokenKind::Repeat)?.span.start;
+                let repeat = self.expect(TokenKind::Repeat)?;
                 let body = self.parse_statements()?;
                 self.expect(TokenKind::Until)?;
                 let cond = self.parse_expression()?;
-                let end = self.peek()?.span.end;
-                Ok(Statement::Repeat { body, cond, span: Span { start, end } })
+                let end = self.peek()?;
+                Ok(Statement::Repeat { body, cond, span: Self::span(&repeat, end) })
             }
 
             TokenKind::For => {
-                let start = self.expect(TokenKind::For)?.span.start;
+                let _fo = self.expect(TokenKind::For)?;
                 let var = self.expect_ident()?;
                 self.expect(TokenKind::Assign)?;
                 let low = self.parse_expression()?;
@@ -601,8 +611,8 @@ impl<'a> Parser<'a> {
                 } else { None };
                 self.expect(TokenKind::Do)?;
                 let body = self.parse_statements()?;
-                let end = self.expect(TokenKind::End)?.span.end;
-                Ok(Statement::For { var, low, high, by, body, span: Span { start, end } })
+                let end = self.expect(TokenKind::End)?;
+                Ok(Statement::For { var, low, high, by, body, span: Self::span(&_fo, &end) })
             }
             _ => Err(ParserError::UnexpectedToken { token: peek }),
         }
@@ -630,16 +640,16 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_case(&mut self) -> Result<Case, ParserError> {
-        let start = self.peek()?.span.start;
+        let start = self.peek()?.clone();
         let label_list = self.list_until(vec![TokenKind::Colon], TokenKind::Comma,
                                          |p|p.parse_label())?;
         self.expect(TokenKind::Colon)?;
         let statements = self.parse_statements()?;
-        let end = self.peek()?.span.end;
+        let span = Self::span(&start, self.peek()?);
         Ok(Case{
             label_list,
             statements,
-            span: Span { start, end },
+            span,
         })
     }
 
@@ -694,7 +704,7 @@ impl<'a> Parser<'a> {
         if let Some(op) = op {
             self.bump()?; // consume relation token
             let rhs = self.parse_simple_expression()?;
-            let span = Span::new(lhs.span().start, rhs.span().end);
+            let span = Self::span(&lhs, &rhs);
             Ok(Expression::Binary {
                 op,
                 lhs: Box::new(lhs),
@@ -730,7 +740,7 @@ impl<'a> Parser<'a> {
 
             self.bump()?; // consume operator
             let rhs = self.parse_term()?;
-            let span = Span::new(expr.span().start, rhs.span().end);
+            let span = Self::span(&expr, &rhs);
 
             expr = Expression::Binary {
                 op,
@@ -742,7 +752,7 @@ impl<'a> Parser<'a> {
 
         // apply prefix last (binds tighter than addops, looser than factor-level ~ if you want Oberon semantics)
         if let Some(op) = prefix {
-            let span = Span::new(prefix_tok.span.start, expr.span().end);
+            let span = Self::span(&prefix_tok, &expr);
             Ok(Expression::Unary {
                 op,
                 operand: Box::new(expr.clone()),
@@ -771,7 +781,7 @@ impl<'a> Parser<'a> {
 
             self.bump()?; // consume mulop
             let rhs = self.parse_factor()?;
-            let span = Span::new(expr.span().start, rhs.span().end);
+            let span = Self::span(&expr, &rhs);
 
             expr = Expression::Binary {
                 op,
@@ -817,7 +827,7 @@ impl<'a> Parser<'a> {
                 Ok(Expression::Unary {
                     op: UnaryOperation::Not,
                     operand: Box::new(operand.clone()),
-                    span: Span { start: tilde.span.start, end: operand.span().end },
+                    span: Self::span(&tilde, &operand),
                 })
             }
             _ => Err(ParserError::UnexpectedToken { token: peek }),
@@ -832,7 +842,7 @@ impl<'a> Parser<'a> {
 
         Ok(Expression::Set {
             elements,
-            span: Span::new(lcurly.span.start, rcurly.span.end),
+            span: Self::span(&lcurly, &rcurly),
         })
     }
 
@@ -883,12 +893,12 @@ impl<'a> Parser<'a> {
 
         // Hvis der hverken var ".field", "[...]" eller "(...)" osv, er det stadig et designator: bare qualident
         // (men du kan vælge at fejle hvis du *kun* kalder denne funktion i situationer hvor du forventer selector)
-        let end = selectors
+        let end: &dyn Spanned = selectors
             .last()
-            .map(|s| s.span().end) // kræver `use crate::ast::Spanned;`
-            .unwrap_or(head.span().end);
+            .map(|s| s as &dyn Spanned)
+            .unwrap_or(&head);
 
-        let span = Span::new(head.span().start, end);
+        let span = Self::span(&head, end);
 
         Ok(crate::ast::Designator {
             head,
@@ -962,7 +972,7 @@ impl<'a> Parser<'a> {
 
         let rpar = self.expect(TokenKind::RParen)?;
         let qid = crate::ast::QualifiedIdentifier::new(parts);
-        let span = Span::new(lpar.span.start, rpar.span.end);
+        let span = Self::span(&lpar, &rpar);
 
         Ok(Some(crate::ast::Selector::TypeGuard(qid, span)))
     }
@@ -985,8 +995,10 @@ impl<'a> Parser<'a> {
             None
         };
 
-        let end = second.as_ref().map(|e| e.span().end).unwrap_or(first.span().end);
-        let span = Span::new(first.span().start, end);
+        let span = match second.as_ref() {
+            Some(e) => Self::span(&first, e),
+            None => Self::span(&first, &first),
+        };
 
         Ok(Element {
             first,
@@ -1000,7 +1012,7 @@ impl<'a> Parser<'a> {
         let lpar = self.bump()?;
         let args = self.list_until(vec![TokenKind::RParen], TokenKind::Comma, |p| p.parse_expression())?;
         let rpar = self.expect(TokenKind::RParen)?;
-        Ok(Some((args, Span::new(lpar.span.start, rpar.span.end))))
+        Ok(Some((args, Self::span(&lpar, &rpar))))
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::span::Span;
+use crate::span::{Span, Spanned};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
@@ -83,5 +83,11 @@ pub struct Token {
 impl Token {
     pub fn new(kind: TokenKind, span: Span) -> Self {
         Self { kind, span }
+    }
+}
+
+impl Spanned for Token {
+    fn span(&self) -> Span {
+        self.span
     }
 }

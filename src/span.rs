@@ -20,6 +20,10 @@ impl Span {
     pub fn increment_end(&mut self) {}
 }
 
+pub trait Spanned {
+    fn span(&self) -> Span;
+}
+
 #[derive(Clone, Debug)]
 pub struct SourceFile {
     pub name: String,

@@ -1,12 +1,4 @@
-use crate::span::Span;
-
-// -------------------------
-// Common
-// -------------------------
-
-pub trait Spanned {
-    fn span(&self) -> Span;
-}
+use crate::span::{Span, Spanned};
 
 // -------------------------
 // Identifiers
