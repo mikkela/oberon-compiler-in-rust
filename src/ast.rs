@@ -198,6 +198,8 @@ pub enum Statement {
     If     { cond: Expression, then_branch: Vec<Statement>, elsif_branches: Vec<ElsIf>, else_branch: Option<Vec<Statement>>, span: Span },
     Case  { expr: Expression, branches: Vec<Case>, span: Span },
     While  { cond: Expression, body: Vec<Statement>, elsif_branches: Vec<ElsIf>, span: Span },
+    Repeat { body: Vec<Statement>, cond: Expression, span: Span },
+    For    { var: Identifier, low: Expression, high: Expression, by: Option<Expression>, body: Vec<Statement>, span: Span },
 }
 
 impl Spanned for Statement {
@@ -208,6 +210,8 @@ impl Spanned for Statement {
             Statement::If     { span, .. } => *span,
             Statement::Case   { span, .. } => *span,
             Statement::While  { span, .. } => *span,
+            Statement::Repeat { span, .. } => *span,
+            Statement::For    { span, .. } => *span,
         }
     }
 }

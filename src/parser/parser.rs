@@ -507,7 +507,8 @@ impl<'a> Parser<'a> {
     // -------------------------
     fn parse_statements(&mut self) -> Result<Vec<Statement>, ParserError> {
         let result = self.list_until(
-            vec![TokenKind::End, TokenKind::Else, TokenKind::Elsif, TokenKind::Pipe], TokenKind::SemiColon, |p| p.parse_statement())?;
+            vec![TokenKind::End, TokenKind::Else, TokenKind::Elsif, TokenKind::Pipe, TokenKind::Until],
+            TokenKind::SemiColon, |p| p.parse_statement())?;
         Ok(result)
     }
 
@@ -576,6 +577,32 @@ impl<'a> Parser<'a> {
                     elsif_branches,
                     span: Span { start, end},
                 })
+            }
+
+            TokenKind::Repeat => {
+                let start = self.expect(TokenKind::Repeat)?.span.start;
+                let body = self.parse_statements()?;
+                self.expect(TokenKind::Until)?;
+                let cond = self.parse_expression()?;
+                let end = self.peek()?.span.end;
+                Ok(Statement::Repeat { body, cond, span: Span { start, end } })
+            }
+
+            TokenKind::For => {
+                let start = self.expect(TokenKind::For)?.span.start;
+                let var = self.expect_ident()?;
+                self.expect(TokenKind::Assign)?;
+                let low = self.parse_expression()?;
+                self.expect(TokenKind::To)?;
+                let high = self.parse_expression()?;
+                let by = if self.at(&TokenKind::By) {
+                    self.bump()?;
+                    Some(self.parse_expression()?)
+                } else { None };
+                self.expect(TokenKind::Do)?;
+                let body = self.parse_statements()?;
+                let end = self.expect(TokenKind::End)?.span.end;
+                Ok(Statement::For { var, low, high, by, body, span: Span { start, end } })
             }
             _ => Err(ParserError::UnexpectedToken { token: peek }),
         }
@@ -2402,7 +2429,7 @@ mod tests {
 
             assert_eq!(module.stmts.len(), 1);
             let stmt = module.stmts[0].clone();
-            let Statement::Case { expr, branches, .. } = stmt else {
+            let Statement::Case { branches, .. } = stmt else {
                 panic!("expected Case Statement");
             };
             assert_eq!(branches.len(), 1);
@@ -2435,7 +2462,7 @@ mod tests {
 
             assert_eq!(module.stmts.len(), 1);
             let stmt = module.stmts[0].clone();
-            let Statement::Case { expr, branches, .. } = stmt else {
+            let Statement::Case { branches, .. } = stmt else {
                 panic!("expected Case Statement");
             };
             assert_eq!(branches.len(), 1);
@@ -2471,7 +2498,7 @@ mod tests {
 
             assert_eq!(module.stmts.len(), 1);
             let stmt = module.stmts[0].clone();
-            let Statement::Case { expr, branches, .. } = stmt else {
+            let Statement::Case { branches, .. } = stmt else {
                 panic!("expected Case Statement");
             };
             assert_eq!(branches.len(), 1);
@@ -2513,7 +2540,7 @@ mod tests {
 
             assert_eq!(module.stmts.len(), 1);
             let stmt = module.stmts[0].clone();
-            let Statement::Case { expr, branches, .. } = stmt else {
+            let Statement::Case { branches, .. } = stmt else {
                 panic!("expected Case Statement");
             };
             assert_eq!(branches.len(), 2);
@@ -2584,6 +2611,89 @@ mod tests {
             assert_eq!(cond, Expression::Bool { value: true, span: Span::new(23, 27) });
             assert_eq!(body.len(), 1);
             assert_eq!(elsif_branches.len(), 1);
+        }
+
+        #[test]
+        fn parse_repeat_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(Repeat  20, 22),
+                tok!(Ident "a", 23, 27),
+                tok!(Semi 27, 28),
+                tok!(Ident "b", 29, 30),
+                tok!(Until 30, 34),
+                tok!(True 35, 39),
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::Repeat { cond, body, .. } = stmt else {
+                panic!("expected Repeat Statement");
+            };
+            assert_eq!(cond, Expression::Bool { value: true, span: Span::new(35, 39) });
+            assert_eq!(body.len(), 2);
+        }
+
+        #[test]
+        fn parse_for_to_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(For  20, 22),
+                tok!(Ident "i", 23, 24),
+                tok!(Assign 24, 25),
+                tok!(Int 1, 25, 26),
+                tok!(To 26, 28),
+                tok!(Int 10, 29, 31),
+                tok!(Do 31, 34),
+                tok!(Ident "b", 29, 30),
+                tok!(End 34, 37),
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::For { var, low, high, by, body, .. } = stmt else {
+                panic!("expected For Statement");
+            };
+            assert_eq!(var.text, "i");
+            assert_eq!(low, Expression::Int { value: 1, span: Span::new(25, 26) });
+            assert_eq!(high, Expression::Int { value: 10, span: Span::new(29, 31) });
+            assert!(by.is_none());
+            assert_eq!(body.len(), 1);
+        }
+
+        #[test]
+        fn parse_for_to_by_statement() {
+            let body = vec![
+                tok!(Begin 14, 19),
+                tok!(For  20, 22),
+                tok!(Ident "i", 23, 24),
+                tok!(Assign 24, 25),
+                tok!(Int 1, 25, 26),
+                tok!(To 26, 28),
+                tok!(Int 10, 29, 31),
+                tok!(By 31, 33),
+                tok!(Int 2, 33, 34),
+                tok!(Do 35, 37),
+                tok!(Ident "b", 38, 39),
+                tok!(End 40, 43),
+            ];
+            let tokens = module_tokens("monkey", "monkey2", body);
+            let module = parse_module(tokens);
+
+            assert_eq!(module.stmts.len(), 1);
+            let stmt = module.stmts[0].clone();
+            let Statement::For { var, low, high, by, body, .. } = stmt else {
+                panic!("expected For Statement");
+            };
+            assert_eq!(var.text, "i");
+            assert_eq!(low, Expression::Int { value: 1, span: Span::new(25, 26) });
+            assert_eq!(high, Expression::Int { value: 10, span: Span::new(29, 31) });
+            assert_eq!(by.unwrap(), Expression::Int { value: 2, span: Span::new(33, 34) });
+            assert_eq!(body.len(), 1);
         }
     }
 }
