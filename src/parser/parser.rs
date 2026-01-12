@@ -169,8 +169,22 @@ impl<'a> Parser<'a> {
         Ok(items)
     }
 
-    fn maybe_star(&mut self) -> Result<Option<Token>, ParserError> {
-        self.eat(TokenKind::Star)
+    fn list_until<T>(
+        &mut self,
+        mut until: impl FnMut(&TokenKind) -> bool,
+        separator: TokenKind,
+        mut item: impl FnMut(&mut Self) -> Result<T, ParserError>,
+    ) -> Result<Vec<T>, ParserError> {
+        let mut items = Vec::new();
+
+        while !until(&self.peek()?.kind) {
+            if !items.is_empty() {
+                self.expect(separator.clone())?;
+            }
+            items.push(item(self)?);
+        }
+
+        Ok(items)
     }
 
     fn create_identifier_def(name: Identifier, star_tok: Option<Token>) -> IdentifierDef {
@@ -200,7 +214,7 @@ impl<'a> Parser<'a> {
 
     fn parse_identifier_def(&mut self) -> Result<IdentifierDef, ParserError> {
         let name = self.expect_ident()?;
-        let star_tok = self.maybe_star()?;
+        let star_tok = self.eat(TokenKind::Star)?;
         Ok(Self::create_identifier_def(name, star_tok))
     }
 
