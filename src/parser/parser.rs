@@ -153,22 +153,6 @@ impl<'a> Parser<'a> {
     // Small parsing utilities
     // -------------------------
 
-    fn list_until_legacy<T>(
-        &mut self,
-        until: Vec<TokenKind>,
-        separator: TokenKind,
-        mut item: impl FnMut(&mut Self) -> Result<T, ParserError>,
-    ) -> Result<Vec<T>, ParserError> {
-        let mut items = vec![];
-        while !until.contains(&self.peek()?.kind) {
-            if !items.is_empty() {
-                self.expect(separator.clone())?;
-            }
-            items.push(item(self)?);
-        }
-        Ok(items)
-    }
-
     fn list_until<T>(
         &mut self,
         mut until: impl FnMut(&TokenKind) -> bool,
@@ -626,9 +610,12 @@ impl<'a> Parser<'a> {
     // -------------------------
 
     fn parse_statements(&mut self) -> Result<Vec<Statement>, ParserError> {
-        let result = self.list_until_legacy(
-            vec![TokenKind::End, TokenKind::Else, TokenKind::Elsif, TokenKind::Pipe, TokenKind::Until, TokenKind::Return],
-            TokenKind::SemiColon, |p| p.parse_statement())?;
+        let result = self.list_until(
+            |k| matches!(k, TokenKind::End) || matches!(k, TokenKind::Else) || matches!(k, TokenKind::Elsif) || matches!(k, TokenKind::Pipe) || matches!(k, TokenKind::Until) || matches!(k, TokenKind::Return),
+            TokenKind::SemiColon,
+            |p| p.parse_statement(),
+        )?;
+
         Ok(result)
     }
 
@@ -678,7 +665,11 @@ impl<'a> Parser<'a> {
                 let case = self.expect(TokenKind::Case)?;
                 let expr = self.parse_expression()?;
                 self.expect(TokenKind::Of)?;
-                let branches = self.list_until_legacy(vec![TokenKind::End], TokenKind::Pipe, |p| p.parse_case())?;
+                let branches = self.list_until(
+                    |k| matches!(k, TokenKind::End),
+                    TokenKind::Pipe,
+                    |p| p.parse_case(),
+                )?;
                 let end = self.expect(TokenKind::End)?;
                 Ok(Statement::Case { expr, branches, span: Self::span(&case, &end), })
             }
