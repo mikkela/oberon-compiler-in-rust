@@ -153,7 +153,7 @@ impl<'a> Parser<'a> {
     // Small parsing utilities
     // -------------------------
 
-    fn list_until<T>(
+    fn list_until_legacy<T>(
         &mut self,
         until: Vec<TokenKind>,
         separator: TokenKind,
@@ -299,7 +299,7 @@ impl<'a> Parser<'a> {
         self.bump()?;
 
 
-        Ok(self.list_until(vec![TokenKind::End], TokenKind::SemiColon, |p| p.parse_const_declaration())?)
+        Ok(self.list_until_legacy(vec![TokenKind::End], TokenKind::SemiColon, |p| p.parse_const_declaration())?)
     }
 
     fn parse_const_declaration(&mut self) -> Result<Declaration, ParserError>
@@ -319,7 +319,7 @@ impl<'a> Parser<'a> {
         self.bump()?;
 
 
-        Ok(self.list_until(vec![TokenKind::End], TokenKind::SemiColon, |p| p.parse_type_declaration())?)
+        Ok(self.list_until_legacy(vec![TokenKind::End], TokenKind::SemiColon, |p| p.parse_type_declaration())?)
     }
 
     fn parse_type_declaration(&mut self) -> Result<Declaration, ParserError>
@@ -337,12 +337,12 @@ impl<'a> Parser<'a> {
         }
 
         self.bump()?; // header
-        Ok(self.list_until(vec![TokenKind::End], TokenKind::SemiColon, |p| p.parse_var_declaration())?)
+        Ok(self.list_until_legacy(vec![TokenKind::End], TokenKind::SemiColon, |p| p.parse_var_declaration())?)
     }
 
     fn parse_var_declaration(&mut self) -> Result<Declaration, ParserError> {
         let start = self.peek()?.clone();
-        let variables = self.list_until(vec![TokenKind::Colon], TokenKind::Comma, |p| p.expect_ident())?;
+        let variables = self.list_until_legacy(vec![TokenKind::Colon], TokenKind::Comma, |p| p.expect_ident())?;
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_type()?;
         let span = Self::span(&start, &ty);
@@ -350,7 +350,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_procedure_declarations(&mut self) -> Result<Vec<Declaration>, ParserError> {
-        Ok(self.list_until(vec![TokenKind::End, TokenKind::Begin], TokenKind::SemiColon, |p| p.parse_procedure_declaration())?)
+        Ok(self.list_until_legacy(vec![TokenKind::End, TokenKind::Begin], TokenKind::SemiColon, |p| p.parse_procedure_declaration())?)
     }
 
     fn parse_procedure_declaration(&mut self) -> Result<Declaration, ParserError> {
@@ -378,7 +378,7 @@ impl<'a> Parser<'a> {
 
                 // ARRAY len {, len} OF type
                 let lengths =
-                    self.list_until(vec![TokenKind::Of], TokenKind::Comma, |p|p.parse_expression())?;
+                    self.list_until_legacy(vec![TokenKind::Of], TokenKind::Comma, |p|p.parse_expression())?;
                 self.expect(TokenKind::Of)?;
                 let element = self.parse_type()?;
                 let span = Self::span(&array, &element);
@@ -401,8 +401,8 @@ impl<'a> Parser<'a> {
                     } else {
                         None
                     };
-                let field_lists = self.list_until(vec![TokenKind::End], TokenKind::SemiColon,
-                                                      |p| p.parse_field_list())?;
+                let field_lists = self.list_until_legacy(vec![TokenKind::End], TokenKind::SemiColon,
+                                                         |p| p.parse_field_list())?;
                 let end = self.expect(TokenKind::End)?;
 
                 Ok(Type::Record {
@@ -437,8 +437,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_field_list(&mut self) -> Result<FieldList, ParserError> {
-        let fields = self.list_until(vec![TokenKind::Colon], TokenKind::Comma,
-                                         |p| p.parse_identifier_def())?;
+        let fields = self.list_until_legacy(vec![TokenKind::Colon], TokenKind::Comma,
+                                            |p| p.parse_identifier_def())?;
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_type()?;
         Ok(FieldList{
@@ -467,7 +467,7 @@ impl<'a> Parser<'a> {
         if self.at(&TokenKind::LParen) {
             let lparen = self.expect(TokenKind::LParen)?;
             let sections = if !self.at(&TokenKind::RParen) {
-                self.list_until(vec![TokenKind::RParen], TokenKind::SemiColon, |p| p.parse_fp_section())?
+                self.list_until_legacy(vec![TokenKind::RParen], TokenKind::SemiColon, |p| p.parse_fp_section())?
             } else { vec![]};
             let rparen = self.expect(TokenKind::RParen)?;
 
@@ -497,8 +497,8 @@ impl<'a> Parser<'a> {
         let start = self.peek()?.clone();
         let by_ref = self.at(&TokenKind::Var);
         if by_ref { self.bump()?; }
-        let names = self.list_until(vec![TokenKind::Colon], TokenKind::Comma,
-                                    |p| p.expect_ident())?;
+        let names = self.list_until_legacy(vec![TokenKind::Colon], TokenKind::Comma,
+                                           |p| p.expect_ident())?;
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_formal_type()?;
         let span = Self::span(&start, &ty);
@@ -575,7 +575,7 @@ impl<'a> Parser<'a> {
     // -------------------------
 
     fn parse_statements(&mut self) -> Result<Vec<Statement>, ParserError> {
-        let result = self.list_until(
+        let result = self.list_until_legacy(
             vec![TokenKind::End, TokenKind::Else, TokenKind::Elsif, TokenKind::Pipe, TokenKind::Until, TokenKind::Return],
             TokenKind::SemiColon, |p| p.parse_statement())?;
         Ok(result)
@@ -627,7 +627,7 @@ impl<'a> Parser<'a> {
                 let case = self.expect(TokenKind::Case)?;
                 let expr = self.parse_expression()?;
                 self.expect(TokenKind::Of)?;
-                let branches = self.list_until(vec![TokenKind::End], TokenKind::Pipe, |p| p.parse_case())?;
+                let branches = self.list_until_legacy(vec![TokenKind::End], TokenKind::Pipe, |p| p.parse_case())?;
                 let end = self.expect(TokenKind::End)?;
                 Ok(Statement::Case { expr, branches, span: Self::span(&case, &end), })
             }
@@ -699,8 +699,8 @@ impl<'a> Parser<'a> {
 
     fn parse_case(&mut self) -> Result<Case, ParserError> {
         let start = self.peek()?.clone();
-        let label_list = self.list_until(vec![TokenKind::Colon], TokenKind::Comma,
-                                         |p|p.parse_label())?;
+        let label_list = self.list_until_legacy(vec![TokenKind::Colon], TokenKind::Comma,
+                                                |p|p.parse_label())?;
         self.expect(TokenKind::Colon)?;
         let statements = self.parse_statements()?;
         let span = Self::span(&start, self.peek()?);
@@ -894,7 +894,7 @@ impl<'a> Parser<'a> {
     fn parse_set_literal(&mut self) -> Result<Expression, ParserError> {
         let lcurly = self.expect(TokenKind::LCurly)?;
 
-        let elements = self.list_until(vec![TokenKind::RCurly], TokenKind::Comma, |p| p.parse_element())?;
+        let elements = self.list_until_legacy(vec![TokenKind::RCurly], TokenKind::Comma, |p| p.parse_element())?;
         let rcurly = self.expect(TokenKind::RCurly)?;
 
         Ok(Expression::Set {
@@ -972,8 +972,8 @@ impl<'a> Parser<'a> {
         self.bump()?; // '['
 
         // (Oberon) index kan være flere udtryk adskilt af comma: a[i, j]
-        let exprs = self.list_until(vec![TokenKind::RSquare], TokenKind::Comma,
-                                        |p| p.parse_expression())?;
+        let exprs = self.list_until_legacy(vec![TokenKind::RSquare], TokenKind::Comma,
+                                           |p| p.parse_expression())?;
         self.expect(TokenKind::RSquare)?;
         // Hvis du vil have span på Index, er det bedst at gemme span i Selector::Index.
         // I min AST-variant var Index(Vec<Expression>) uden span; det fungerer, men span bliver “best effort”.
@@ -1067,7 +1067,7 @@ impl<'a> Parser<'a> {
     fn parse_call_args(&mut self) -> Result<Option<(Vec<Expression>, Span)>, ParserError> {
         if !self.at(&TokenKind::LParen) { return Ok(None); }
         let lpar = self.bump()?;
-        let args = self.list_until(vec![TokenKind::RParen], TokenKind::Comma, |p| p.parse_expression())?;
+        let args = self.list_until_legacy(vec![TokenKind::RParen], TokenKind::Comma, |p| p.parse_expression())?;
         let rpar = self.expect(TokenKind::RParen)?;
         Ok(Some((args, Self::span(&lpar, &rpar))))
     }
