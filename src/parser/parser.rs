@@ -313,7 +313,11 @@ impl<'a> Parser<'a> {
         self.bump()?;
 
 
-        Ok(self.list_until_legacy(vec![TokenKind::End], TokenKind::SemiColon, |p| p.parse_const_declaration())?)
+        Ok(self.list_until(
+            |k| matches!(k, TokenKind::End),
+            TokenKind::SemiColon,
+            |p| p.parse_const_declaration(),
+        )?)
     }
 
     fn parse_const_declaration(&mut self) -> Result<Declaration, ParserError>
@@ -986,8 +990,11 @@ impl<'a> Parser<'a> {
         self.bump()?; // '['
 
         // (Oberon) index kan være flere udtryk adskilt af comma: a[i, j]
-        let exprs = self.list_until_legacy(vec![TokenKind::RSquare], TokenKind::Comma,
-                                           |p| p.parse_expression())?;
+        let exprs = self.list_until(
+            |k| matches!(k, TokenKind::RSquare),
+            TokenKind::Comma,
+            |p| p.parse_expression(),
+        )?;
         self.expect(TokenKind::RSquare)?;
         // Hvis du vil have span på Index, er det bedst at gemme span i Selector::Index.
         // I min AST-variant var Index(Vec<Expression>) uden span; det fungerer, men span bliver “best effort”.
